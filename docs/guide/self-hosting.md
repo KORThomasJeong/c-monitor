@@ -1,0 +1,83 @@
+# 직접 서버 올리기
+
+C-Monitor 서버는 도커 컴포즈 하나로 올립니다. 앱 컨테이너 하나(서버와 웹 화면)와 Postgres 17 컨테이너 하나로 되어 있습니다. 이 문서는 저장소의 [`deploy/`](../../deploy/) 구성을 기준으로 적었습니다.
+
+## 준비물
+
+- 도커와 도커 컴포즈가 있는 서버
+- HTTPS로 접속할 도메인과 리버스 프록시(Nginx Proxy Manager, nginx 등)
+- 구글 로그인용 OAuth 클라이언트 — 구글 로그인 설정은 [google-oauth.md](google-oauth.md)에 있습니다. 서버에 SSH로 접속할 수 있다면 안내형 스크립트 `deploy/setup-google-oauth.sh <SSH 대상>`으로 값을 넣을 수도 있습니다.
+
+## 구성
+
+| 서비스 | 컨테이너 | 내용 |
+|---|---|---|
+| `app` | `c-monitor-app` | 서버와 웹 화면. 포트 3000. 메모리 512MB 제한 |
+| `db` | `c-monitor-db` | `postgres:17-alpine`. 데이터는 `db-data` 볼륨. 메모리 512MB 제한 |
+
+앱 컨테이너는 호스트 포트를 열지 않습니다. 대신 `internal` 네트워크(데이터베이스와 연결)와 외부 네트워크 `npm-network`(프록시와 연결)에 함께 들어가, 프록시가 같은 네트워크에서 `c-monitor-app:3000`으로 들어옵니다. `npm-network`는 컴포즈가 만들지 않는 외부 네트워크이므로 미리 있어야 합니다. 프록시가 다른 이름의 네트워크를 쓴다면 `deploy/compose.yml`의 `npm-network`를 그 이름으로 바꾸고, 새로 만든다면 다음처럼 만든 뒤 프록시 컨테이너도 그 네트워크에 넣어 주세요.
+
+```
+docker network create npm-network
+```
+
+데이터베이스 표는 앱이 시작할 때 스스로 만들고 맞춥니다. 따로 마이그레이션 명령을 실행할 필요는 없습니다.
+
+## 환경변수
+
+`deploy/env.prod.example`을 `deploy/.env.prod`로 복사해 채웁니다. 이 파일은 커밋하지 마세요(`.gitignore`가 `.env*`를 막습니다).
+
+| 이름 | 필수 | 내용 |
+|---|---|---|
+| `PUBLIC_URL` | 예 | 사용자가 접속할 주소(예: `https://monitor.example.com`). 구글 로그인 돌아올 주소와 연결 링크를 이 값으로 만듭니다. `https://`로 시작하면 로그인 쿠키에 Secure가 붙습니다 |
+| `GOOGLE_CLIENT_ID` | 예 | 구글 OAuth 클라이언트 ID |
+| `GOOGLE_CLIENT_SECRET` | 예 | 구글 OAuth 클라이언트 보안 비밀 |
+| `SESSION_SECRET` | 예 | 로그인 과정의 상태값 서명에 쓰는 임의의 긴 문자열. 예: `openssl rand -hex 32` |
+| `ADMIN_EMAILS` | 사실상 예 | 자동으로 승인되고 관리자가 되는 구글 계정 주소(쉼표로 구분). 비우면 가입을 승인할 사람이 없습니다 |
+| `POSTGRES_PASSWORD` | 예 | 데이터베이스 비밀번호. 예: `openssl rand -hex 24`. 컴포즈가 이 값으로 앱의 `DATABASE_URL`을 만듭니다 |
+
+앱은 이 밖에 `PORT`(기본 3000)와 `DATABASE_URL`을 읽습니다. 컴포즈로 올리면 둘 다 정해져 있으니 따로 넣지 않아도 됩니다.
+
+구글 OAuth 클라이언트의 승인된 리디렉션 URI는 `<PUBLIC_URL>/auth/google/callback`입니다. 자세한 순서는 [google-oauth.md](google-oauth.md)를 따르세요.
+
+## 올리기
+
+저장소 루트에서:
+
+```
+docker compose -f deploy/compose.yml --env-file deploy/.env.prod up -d --build
+```
+
+앱 컨테이너에는 `/healthz` 상태 확인이 들어 있어, `docker ps`에서 `healthy`로 바뀌면 준비된 것입니다. 업데이트할 때는 저장소를 새로 받은 뒤 같은 명령을 다시 실행합니다.
+
+## 프록시 설정
+
+프록시는 도메인을 `c-monitor-app:3000`으로 넘기면 됩니다. 한 가지 꼭 할 일은 **응답 버퍼링을 끄는 것**입니다. 대시보드는 서버가 보내는 실시간 스트림(Server-Sent Events, `/api/stream`)으로 화면을 갱신하는데, 프록시가 응답을 모아 두면 변화가 늦게 오거나 오지 않습니다. 서버는 스트림 응답에 `X-Accel-Buffering: no` 헤더를 붙이지만, 프록시 설정에서도 꺼 두는 편이 확실합니다.
+
+nginx(또는 Nginx Proxy Manager의 Advanced 칸)에 다음을 넣습니다.
+
+```
+proxy_buffering off;
+proxy_read_timeout 1h;
+```
+
+서버는 스트림이 끊기지 않도록 15초마다 빈 신호를 보냅니다. 스트림이 끊겨도 브라우저가 스스로 다시 붙고, 다시 붙으면 서버가 전체 상태를 새로 보냅니다.
+
+## 플러그인 연결
+
+서버가 뜨면 각 컴퓨터에서 자기 서버 주소로 연결합니다.
+
+```
+/c-monitor:connect https://monitor.example.com
+```
+
+나머지 순서는 [시작하기](getting-started.md)와 같습니다. `ADMIN_EMAILS`에 넣은 계정으로 먼저 로그인해 두면 다른 사람의 가입을 승인할 수 있습니다.
+
+## 운영 참고
+
+- **앱은 한 개만 띄웁니다.** 실시간 스트림의 이벤트 전달이 앱 프로세스 메모리 안에서 이루어지므로, 앱 컨테이너를 여러 개로 늘리면 다른 컨테이너가 받은 변화가 화면에 실시간으로 오지 않습니다.
+- **백그라운드 작업**: 1분마다 연락 끊김을 판정하고, 매일 새벽 4시(한국 시간)에 보관 기간이 지난 대화·사용량 기록과 만료된 로그인 세션, 연결 요청, 7일 지난 이벤트 ID 기록을 지웁니다.
+- **크기 한도**: 플러그인이 한 번에 보내는 묶음은 512KB까지 받습니다. 넘으면 413으로 거절합니다.
+- **백업**: 데이터는 `db-data` 볼륨에 있습니다. 예를 들어 `docker exec c-monitor-db pg_dump -U cmonitor cmonitor > c-monitor.sql`로 덤프를 받아 둘 수 있습니다.
+- **로그인 유지**: 로그인은 30일 동안 유지되고, 로그인 쿠키 원문은 서버에 저장하지 않습니다(해시만 저장). 기기 토큰도 해시로만 저장합니다.
+- 서버를 운영하는 사람은 데이터베이스에 저장된 모든 사용자의 대화를 볼 수 있습니다. 사용자에게 이 점을 알려 주세요([자주 묻는 질문](faq.md)).
