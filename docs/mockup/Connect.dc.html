@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>컴퓨터 연결 승인</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="/_blob/f27cce60408dc337cd9cf0542b63d809">
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div class="app" style="width: 390px; min-height: 844px;">
+<div class="center" style="min-height: 844px;">
+  <div class="auth">
+    <sc-if value="{{pending}}" hint-placeholder-val="{{true}}">
+      <div class="auth-head">
+        <span class="brand-mark" aria-hidden="true"><svg class="ico" width="24" height="24" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"></rect><path d="M8 21h8M12 17v4"></path></svg></span>
+        <h1 class="h1" style="font-size: 20px">이 컴퓨터를 연결할까요?</h1>
+        <p class="sub" style="margin: 0">터미널에 보이는 코드와 같은지 확인해 주세요.</p>
+      </div>
+      <div class="code-big">K7QM-2XPA</div>
+      <div class="dl">
+        <div class="dl-row"><span class="k">컴퓨터</span><span class="v">집 PC</span></div>
+        <div class="dl-row"><span class="k">운영체제</span><span class="v">Windows 11</span></div>
+        <div class="dl-row"><span class="k">클로드코드</span><span class="v">2.1.325 · 플러그인 0.1.0</span></div>
+        <div class="dl-row"><span class="k">클로드 계정</span><span class="v">dev@company-b.example</span></div>
+        <div class="dl-row"><span class="k">승인하는 사람</span><span class="v">admin@example.com</span></div>
+        <div class="dl-row"><span class="k">요청 시각</span><span class="v">오늘 16:42 · 9분 남음</span></div>
+      </div>
+      <div class="notice">
+        <svg class="ico" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4M12 8h.01"></path></svg>
+        <span>승인하면 이 컴퓨터의 클로드코드 대화가 서버로 전송됩니다. 비밀번호·API 키는 가려서 보내고, 관리자 페이지에서 언제든 연결을 해제할 수 있습니다.</span>
+      </div>
+      <div class="btn-row">
+        <button class="btn" onClick="{{deny}}">거부</button>
+        <button class="btn primary" onClick="{{approve}}">연결 승인</button>
+      </div>
+    </sc-if>
+    <sc-if value="{{approved}}" hint-placeholder-val="{{false}}">
+      <div class="auth-head">
+        <span class="brand-mark" style="background: var(--ok)" aria-hidden="true"><svg class="ico" width="24" height="24" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"></path></svg></span>
+        <h1 class="h1" style="font-size: 20px">연결했습니다</h1>
+        <p class="sub" style="margin: 0">집 PC의 세션이 이제 대시보드에 나타납니다. 이 창은 닫아도 됩니다.</p>
+      </div>
+      <a class="btn primary block" href="Main.dc.html">대시보드 열기</a>
+    </sc-if>
+    <sc-if value="{{denied}}" hint-placeholder-val="{{false}}">
+      <div class="auth-head">
+        <h1 class="h1" style="font-size: 20px">연결을 거부했습니다</h1>
+        <p class="sub" style="margin: 0">터미널의 연결 요청은 취소됩니다. 다시 연결하려면 명령을 새로 실행해 주세요.</p>
+      </div>
+      <button class="btn block" onClick="{{reset}}">처음으로</button>
+    </sc-if>
+  </div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const st = (this.state && this.state.step) || 'pending';
+    return {
+      pending: st === 'pending',
+      approved: st === 'approved',
+      denied: st === 'denied',
+      approve: () => this.setState({ step: 'approved' }),
+      deny: () => this.setState({ step: 'denied' }),
+      reset: () => this.setState({ step: 'pending' })
+    };
+  }
+}
+</script>
+</body>
+</html>

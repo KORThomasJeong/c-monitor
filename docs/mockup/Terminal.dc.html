@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>클로드코드 연결 명령</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="/_blob/f27cce60408dc337cd9cf0542b63d809">
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div class="app" style="width: 640px; min-height: 460px;">
+<div class="term" style="min-height: 460px;">
+  <div class="t-bar" aria-hidden="true"><i></i><i></i><i></i></div>
+  <p><span class="t-dim">&gt; </span><span class="t-cmd">/c-monitor:connect https://c-monitor.example.com</span></p>
+  <p> </p>
+  <p><span class="t-dim">●</span> 서버에 연결을 요청했습니다.</p>
+  <p> </p>
+  <p>  아래 링크를 열고 구글로 로그인한 뒤 코드를 확인해 주세요.</p>
+  <p>  <span class="t-link">https://c-monitor.example.com/connect</span></p>
+  <p> </p>
+  <p>  확인 코드   <span class="t-code">K7QM-2XPA</span></p>
+  <p>  <span class="t-dim">10분 안에 승인하지 않으면 코드가 만료됩니다.</span></p>
+  <p> </p>
+  <p><span class="t-dim">  승인을 기다리는 중…</span></p>
+  <p><span class="t-ok">✓</span> 승인되었습니다. 이 컴퓨터를 <span class="t-cmd">집 PC</span>로 등록했습니다.</p>
+  <p><span class="t-ok">✓</span> 상태줄에 한도 전송을 연결했습니다. claude-hud는 그대로 보입니다.</p>
+  <p><span class="t-dim">  이제 이 컴퓨터의 모든 세션이 자동으로 전송됩니다.</span></p>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":640,"height":460}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

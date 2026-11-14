@@ -1,0 +1,50 @@
+# 운영 구성. 실행:
+#   docker compose -f deploy/compose.yml --env-file deploy/.env.prod up -d --build
+name: c-monitor
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: c-monitor-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://cmonitor:${POSTGRES_PASSWORD}@c-monitor-db:5432/cmonitor
+      PUBLIC_URL: ${PUBLIC_URL}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      SESSION_SECRET: ${SESSION_SECRET}
+      ADMIN_EMAILS: ${ADMIN_EMAILS}
+    # 호스트 포트는 열지 않는다. 프록시가 같은 네트워크에서 c-monitor-app:3000 으로 들어온다.
+    networks: [internal, npm-network]
+    mem_limit: 512m
+
+  db:
+    image: postgres:17-alpine
+    container_name: c-monitor-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cmonitor
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: cmonitor
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cmonitor -d cmonitor"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    networks: [internal]
+    mem_limit: 512m
+
+volumes:
+  db-data:
+
+networks:
+  internal:
+  npm-network:
+    external: true

@@ -1,0 +1,156 @@
+// 세션·계정을 화면 표시용으로 바꾸는 순수 함수들.
+import {
+  STATUS_LABEL,
+  STATUS_RANK,
+  type AccountView,
+  type MachineView,
+  type SessionStatus,
+  type SessionView,
+} from '@c-monitor/shared';
+import { formatAgo, formatDuration } from './format';
+
+/** 태그 색. limit은 wait과 같은 빨강으로 취급한다. */
+export const TAG_COLOR: Record<SessionStatus, string> = {
+  wait: 'red', limit: 'red', done: 'green', run: 'blue', lost: 'amber', end: 'neutral',
+};
+
+/** CSS 상태 클래스(s-*, k-*)에 쓰는 이름. limit은 wait 스타일. */
+export const styleKey = (s: SessionStatus): Exclude<SessionStatus, 'limit'> => (s === 'limit' ? 'wait' : s);
+
+export const isWaitLike = (s: SessionStatus) => s === 'wait' || s === 'limit';
+
+/** 빨강 깜박임: 답을 기다리는데 아직 열어 보지 않음. */
+export const isUnseen = (s: SessionView) => isWaitLike(s.status) && s.seen === false;
+
+export const statusLabel = (s: SessionStatus) => STATUS_LABEL[s];
+
+export function cardClass(s: SessionView, selected: boolean): string {
+  let c = `card s-${styleKey(s.status)}`;
+  if (isUnseen(s)) c += ' unseen';
+  if (s.status === 'done') c += ' unack';
+  if (selected) c += ' sel';
+  return c;
+}
+
+export function tileClass(s: SessionView): string {
+  let c = `tile k-${styleKey(s.status)}`;
+  if (isUnseen(s)) c += ' unseen';
+  if (s.status === 'done') c += ' unack';
+  return c;
+}
+
+/** 정렬: 상태 순위 → 최근 활동 순. */
+export function sortSessions(list: SessionView[]): SessionView[] {
+  return list.slice().sort((a, b) =>
+    STATUS_RANK[a.status] - STATUS_RANK[b.status] || Date.parse(b.lastEventAt) - Date.parse(a.lastEventAt));
+}
+
+/** 카드 오른쪽 위 시간. */
+export function elapsedText(s: SessionView, now: number): string {
+  const since = (iso: string) => Math.max(0, now - Date.parse(iso));
+  switch (s.status) {
+    case 'run':
+    case 'wait':
+    case 'limit': {
+      const ms = since(s.startedAt);
+      return ms < 60_000 ? '방금 시작' : `${formatDuration(ms)}째`;
+    }
+    case 'done':
+      return `${formatAgo(s.lastEventAt, now)} 끝남`;
+    case 'lost':
+      return `${formatDuration(since(s.lastEventAt))}째 소식 없음`;
+    case 'end':
+      return `${formatAgo(s.endedAt ?? s.lastEventAt, now)} 종료`;
+  }
+}
+
+/** 타일용 짧은 시간. */
+export function shortTime(s: SessionView, now: number): string {
+  if (s.status === 'lost') return `${formatDuration(Math.max(0, now - Date.parse(s.lastEventAt)))} 조용`;
+  if (s.status === 'end') return formatAgo(s.endedAt ?? s.lastEventAt, now);
+  return elapsedText(s, now);
+}
+
+export type AccountStyle = { label: string; chip: string; spark: string };
+
+/** 계정마다 칩 색·짧은 이름. 색은 서버가 준 순서로 번갈아 쓴다(숨긴 계정 포함해 고정). */
+export function accountStyles(accounts: AccountView[]): (email: string | null) => AccountStyle {
+  const map = new Map<string, AccountStyle>();
+  accounts.forEach((a, i) => {
+    const eco = i % 2 === 1;
+    map.set(a.email, {
+      label: a.alias?.trim() || domainOf(a.email),
+      chip: eco ? 'chip eco' : 'chip sk',
+      spark: eco ? 'spark-line eco' : 'spark-line',
+    });
+  });
+  return (email) => {
+    if (!email) return { label: '계정 모름', chip: 'chip sk', spark: 'spark-line' };
+    return map.get(email) ?? { label: domainOf(email), chip: 'chip sk', spark: 'spark-line' };
+  };
+}
+
+export const domainOf = (email: string) => email.split('@')[1] ?? email;
+
+/** 최근 갱신 순(기록 없는 계정은 뒤로). */
+export function byRecent(a: AccountView, b: AccountView): number {
+  return (b.at ? Date.parse(b.at) : -Infinity) - (a.at ? Date.parse(a.at) : -Infinity);
+}
+
+/** 한도 카드에 보일 계정: 숨긴 계정 제외, 4개 넘으면 최근 갱신 4개 + 나머지 수. */
+export function limitCards(accounts: AccountView[], expanded: boolean, max = 4): { shown: AccountView[]; rest: number } {
+  const visible = accounts.filter((a) => !a.hidden);
+  if (visible.length <= max) return { shown: visible, rest: 0 };
+  const sorted = visible.slice().sort(byRecent);
+  return expanded ? { shown: sorted, rest: sorted.length - max } : { shown: sorted.slice(0, max), rest: sorted.length - max };
+}
+
+/** 사용률 단계: 80% 이상 warn, 95% 이상 crit. */
+export const level = (p: number | null): '' | 'warn' | 'crit' => (p == null ? '' : p >= 95 ? 'crit' : p >= 80 ? 'warn' : '');
+
+/** 7일 추이 → 240×40 polyline 좌표(목업과 같은 비율). */
+export function sparkPoints(history: { sevenDayPct: number }[]): string {
+  const y = (v: number) => (38 - Math.max(0, Math.min(100, v)) * 0.36).toFixed(1);
+  if (history.length === 0) return '';
+  if (history.length === 1) return `0,${y(history[0]!.sevenDayPct)} 240,${y(history[0]!.sevenDayPct)}`;
+  const step = 240 / (history.length - 1);
+  return history.map((h, i) => `${+(i * step).toFixed(1)},${y(h.sevenDayPct)}`).join(' ');
+}
+
+/** 도구 입력을 한 줄로 요약. */
+export function toolSummary(input: unknown, fallback = ''): string {
+  if (input == null) return firstLine(fallback);
+  if (typeof input === 'string') return firstLine(input);
+  if (typeof input === 'object') {
+    const o = input as Record<string, unknown>;
+    for (const k of ['command', 'file_path', 'path', 'pattern', 'url', 'query', 'description', 'prompt']) {
+      if (typeof o[k] === 'string' && o[k]) return firstLine(o[k] as string);
+    }
+    try { return firstLine(JSON.stringify(input)); } catch { return ''; }
+  }
+  return String(input);
+}
+
+export function firstLine(text: string, max = 200): string {
+  const line = text.split(/\r?\n/).find((l) => l.trim()) ?? '';
+  return line.length > max ? `${line.slice(0, max)}…` : line;
+}
+
+export const isPcOs = (os: string) => /windows|mac|darwin/i.test(os);
+
+/** 컴퓨터별 묶음. 컴퓨터 목록 순서를 따르고, 목록에 없는 컴퓨터의 세션은 맨 뒤 묶음으로. */
+export function groupByMachine(
+  sessions: SessionView[],
+  machines: MachineView[],
+): { machine: MachineView; sessions: SessionView[] }[] {
+  const known = new Set(machines.map((m) => m.id));
+  const groups = machines.map((m) => ({ machine: m, sessions: sessions.filter((s) => s.machineId === m.id) }));
+  const orphan = sessions.filter((s) => !known.has(s.machineId));
+  if (orphan.length) {
+    groups.push({
+      machine: { id: '__unknown', name: '알 수 없는 컴퓨터', os: '', pluginVersion: '', lastSeenAt: null, online: false, remoteReply: false },
+      sessions: orphan,
+    });
+  }
+  return groups;
+}

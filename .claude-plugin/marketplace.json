@@ -1,0 +1,18 @@
+{
+  "name": "c-monitor",
+  "owner": {
+    "name": "KORThomasJeong"
+  },
+  "metadata": {
+    "description": "여러 컴퓨터의 클로드코드 세션 현황을 한 화면에서 보는 c-monitor 대시보드용 플러그인"
+  },
+  "plugins": [
+    {
+      "name": "c-monitor",
+      "source": "./plugin",
+      "description": "클로드코드 세션의 상태·대화·5시간/주간 한도를 c-monitor 서버로 보냅니다. /c-monitor:connect <서버주소> 로 연결합니다.",
+      "category": "monitoring",
+      "tags": ["status", "dashboard", "monitoring", "hooks", "statusline"]
+    }
+  ]
+}

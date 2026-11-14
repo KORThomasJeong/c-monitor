@@ -1,0 +1,11 @@
+{
+  "name": "c-monitor",
+  "version": "0.1.0",
+  "description": "클로드코드 세션 현황을 c-monitor 서버로 보냅니다",
+  "author": {
+    "name": "KORThomasJeong"
+  },
+  "homepage": "https://github.com/KORThomasJeong/c-monitor",
+  "repository": "https://github.com/KORThomasJeong/c-monitor",
+  "keywords": ["status", "dashboard", "monitoring", "hooks", "statusline"]
+}

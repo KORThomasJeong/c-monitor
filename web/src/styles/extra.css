@@ -1,0 +1,64 @@
+/* app.css·deck.css에 없는 것만. 토큰(var(--…))만 쓴다. */
+body{margin:0}
+
+/* 목업 helmet의 링크 색. :where로 낮춰 .btn·.nav a 등 기존 규칙이 이기게 한다. */
+:where(.app) a{color:var(--primary)}
+:where(.app) a:hover{color:var(--primary-hover)}
+
+/* 실시간 연결이 끊겼을 때 */
+.live.off{background:var(--warn-soft);color:var(--warn-text)}
+.live.off .live-dot{background:var(--warn)}
+
+/* 헤더 링크 버튼에 배지(관리자 승인 대기 수) */
+.btn-admin{position:relative}
+
+/* 접근성: 기존에 빠진 포커스 표시 */
+.link-btn:focus-visible,.nav a:focus-visible,.gbtn:focus-visible,.tile:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+.btn:disabled,.link-btn:disabled{opacity:.5;cursor:not-allowed}
+
+/* 한도 카드 "외 N개" 펼치기 */
+.lim-more{grid-column:1/-1;justify-self:start}
+.lp-more{padding:0 12px}
+
+/* 로그인 버튼을 링크로 */
+a.gbtn{text-decoration:none;color:var(--text)}
+a.gbtn:hover{color:var(--text)}
+
+/* 대화 줄 */
+.m-body{white-space:pre-wrap;overflow-wrap:anywhere}
+.m-sys .m-body{font-size:12px;color:var(--ter)}
+.tool-at{color:var(--ter);flex:none;font-size:12px}
+.mask code{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.log-empty{margin:0;padding:24px 0;text-align:center;font-size:12px;color:var(--ter)}
+
+/* 빈 상태 */
+.empty{background:var(--surface);border:1px solid var(--border2);border-radius:8px;padding:32px 24px;text-align:center;color:var(--sub)}
+.empty p{margin:0}
+.empty .hint{margin-top:8px}
+.empty code{font-family:var(--mono);font-size:12px;color:var(--text);overflow-wrap:anywhere}
+.deck-empty{grid-column:1/-1;align-self:start}
+
+/* PC에서는 상세 패널이 스크롤을 따라다닌다 */
+@media (min-width:1024px){
+  .wrap .panel{position:sticky;top:24px;max-height:calc(100vh - 48px)}
+  .wrap .panel .log{max-height:none;flex:1 1 auto;min-height:0}
+}
+
+/* 설정·관리 화면: 목업 Admin.dc.html helmet 그대로(헤더·왼쪽 메뉴 고정) */
+.admin-page .hdr{position:sticky;top:0;z-index:20}
+.admin-page .side{position:sticky;top:88px;align-self:flex-start;z-index:10}
+.admin-page .sec{scroll-margin-top:88px}
+@media (max-width:767px){
+  .admin-page .admin-wrap{padding-top:0}
+  .admin-page .side{top:56px;flex:1 1 100%;max-width:none;margin:0 -16px;border-radius:0;border-width:0 0 1px;padding:4px 8px}
+  .admin-page .nav{flex-direction:row;overflow-x:auto;gap:4px}
+  .admin-page .nav a{flex:none;height:40px}
+  .admin-page .sec{scroll-margin-top:112px}
+}
+.alias-input{width:200px}
+.save-note{align-self:center;margin-right:auto;font-size:12px}
+.save-note.ok{color:var(--ok-text)}
+.save-note.bad{color:var(--danger-text)}
+
+/* 연결 코드 입력 */
+.code-input{height:40px;font-family:var(--mono);font-size:16px;letter-spacing:2px;text-transform:uppercase;text-align:center}

@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>C-Monitor 대시보드</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="/_blob/f27cce60408dc337cd9cf0542b63d809">
+<link rel="stylesheet" href="/_blob/3f7d283073e3d9c911921d8a7b266732">
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+a{color:#1268E6}a:hover{color:#4088EE}
+</style>
+</helmet>
+<div class="app {{appCls}}">
+<header class="hdr">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"><svg class="ico" width="18" height="18" viewBox="0 0 24 24"><path d="M3 12h4l3-7 4 14 3-7h4"></path></svg></span>
+    <span class="brand-name">C-Monitor</span>
+    <span class="live"><span class="live-dot"></span><span class="live-text">실시간 연결됨</span></span>
+  </div>
+  <sc-if value="{{isDeck}}" hint-placeholder-val="{{false}}">
+    <div class="hdr-mid">
+      <div class="lpills">
+        <sc-for list="{{accounts}}" as="a" hint-placeholder-count="2">
+          <span class="lp" aria-label="{{a.name}} 사용 한도"><span class="{{a.chipCls}}">{{a.short}}</span><span>5시간 <b class="{{a.fiveCls}}">{{a.fivePct}}%</b></span><span>주간 <b class="{{a.weekCls}}">{{a.weekPct}}%</b></span></span>
+        </sc-for>
+      </div>
+    </div>
+  </sc-if>
+  <div class="hdr-actions">
+    <button class="btn mode-btn" onClick="{{toggleMode}}" aria-label="{{modeAria}}">
+      <sc-if value="{{isDetail}}" hint-placeholder-val="{{true}}"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg><span class="btn-text">간단히</span></sc-if>
+      <sc-if value="{{isDeck}}" hint-placeholder-val="{{false}}"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"></path></svg><span class="btn-text">상세</span></sc-if>
+    </button>
+    <button class="icon-btn" aria-label="알림 {{alertCount}}건">
+      <svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"></path><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"></path></svg>
+      <sc-if value="{{hasAlert}}" hint-placeholder-val="{{true}}"><span class="badge">{{alertCount}}</span></sc-if>
+    </button>
+    <button class="icon-btn" aria-label="테마 바꾸기" onClick="{{toggleTheme}}">
+      <sc-if value="{{isDark}}" hint-placeholder-val="{{false}}"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg></sc-if>
+      <sc-if value="{{isLight}}" hint-placeholder-val="{{true}}"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg></sc-if>
+    </button>
+    <a class="btn btn-admin" href="Admin.dc.html" aria-label="관리자"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"></path></svg><span class="btn-text">관리자</span></a>
+    <span class="avatar" title="admin@example.com 로그인 중">H</span>
+  </div>
+</header>
+
+<sc-if value="{{isDetail}}" hint-placeholder-val="{{true}}">
+<div class="wrap">
+  <main class="left">
+    <div>
+      <h1 class="h1">세션 현황</h1>
+      <p class="sub">세션 8개 · 컴퓨터 4대 · 방금 갱신</p>
+    </div>
+
+    <section class="limits" aria-label="계정별 사용 한도">
+      <sc-for list="{{accounts}}" as="a" hint-placeholder-count="2">
+        <article class="lim">
+          <div class="lim-head">
+            <span class="{{a.chipCls}}">{{a.short}}</span>
+            <span class="lim-name">{{a.name}}</span>
+            <sc-if value="{{a.active}}" hint-placeholder-val="{{false}}"><span class="tag blue"><span class="dot"></span>지금 사용 중</span></sc-if>
+            <span class="lim-plan">{{a.plan}}</span>
+          </div>
+          <div class="meters">
+            <sc-for list="{{a.meters}}" as="m" hint-placeholder-count="2">
+              <div class="meter">
+                <div class="meter-top">
+                  <span class="meter-label">{{m.label}}</span>
+                  <sc-if value="{{m.warn}}" hint-placeholder-val="{{false}}"><span class="{{m.warnCls}}"><span class="dot"></span>{{m.warnLabel}}</span></sc-if>
+                </div>
+                <div class="meter-val">{{m.pct}}<span class="pct">%</span></div>
+                <div class="bar" role="img" aria-label="{{m.label}} {{m.pct}}퍼센트 사용"><div class="{{m.fillCls}}" style="width: {{m.pct}}%"></div></div>
+                <div class="meter-foot">{{m.reset}}</div>
+              </div>
+            </sc-for>
+          </div>
+          <div class="spark">
+            <div class="spark-head"><span>주간 사용량 · 최근 7일</span><span>{{a.sparkRange}}</span></div>
+            <svg class="spark-svg" viewBox="0 0 240 40" preserveAspectRatio="none" role="img" aria-label="주간 사용량 7일 추이"><polyline class="{{a.sparkCls}}" points="{{a.spark}}"></polyline></svg>
+          </div>
+        </article>
+      </sc-for>
+    </section>
+
+    <div class="seg-box">
+      <div class="seg" aria-label="상태 필터">
+        <sc-for list="{{filters}}" as="f" hint-placeholder-count="6">
+          <button class="{{f.cls}}" onClick="{{f.pick}}" aria-pressed="{{f.on}}"><span class="{{f.dotCls}}"></span>{{f.label}}<span class="cnt">{{f.cnt}}</span></button>
+        </sc-for>
+      </div>
+    </div>
+
+    <sc-for list="{{hosts}}" as="h" hint-placeholder-count="4">
+      <section class="group" aria-label="{{h.name}}">
+        <div class="g-head">
+          <span class="g-ico" aria-hidden="true">
+            <sc-if value="{{h.isPc}}" hint-placeholder-val="{{false}}"><svg class="ico" width="16" height="16" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"></rect><path d="M8 21h8M12 17v4"></path></svg></sc-if>
+            <sc-if value="{{h.isServer}}" hint-placeholder-val="{{true}}"><svg class="ico" width="16" height="16" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2"></rect><rect x="2" y="14" width="20" height="8" rx="2"></rect><path d="M6 6h.01M6 18h.01"></path></svg></sc-if>
+          </span>
+          <div class="g-text">
+            <div class="g-name">{{h.name}}</div>
+            <div class="g-meta">{{h.meta}}</div>
+          </div>
+          <span class="{{h.onCls}}"><span class="dot"></span>{{h.onLabel}}</span>
+        </div>
+        <div class="cards">
+          <sc-for list="{{h.cards}}" as="c" hint-placeholder-count="3">
+            <button class="{{c.cls}}" onClick="{{c.open}}" aria-label="{{c.name}} · {{c.stLabel}}">
+              <span class="c-top"><span class="{{c.tagCls}}"><span class="dot"></span>{{c.stLabel}}</span><span class="c-time">{{c.elapsed}}</span></span>
+              <span class="c-name">{{c.name}}</span>
+              <span class="c-meta">
+                <span class="{{c.chipCls}}">{{c.acctLabel}}</span>
+                <span class="c-mi"><svg class="ico" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v12"></path><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>{{c.branch}}</span>
+                <span class="c-mi">{{c.model}}</span>
+              </span>
+              <span class="c-act"><b>{{c.act1}}</b> {{c.act2}}</span>
+              <span class="c-foot"><span>{{c.updated}}</span><span>컨텍스트 {{c.ctx}}%</span></span>
+            </button>
+          </sc-for>
+        </div>
+      </section>
+    </sc-for>
+  </main>
+
+  <aside class="panel" aria-label="세션 상세">
+    <sc-if value="{{hasSel}}" hint-placeholder-val="{{true}}">
+      <div class="p-head">
+        <div class="p-top">
+          <button class="icon-btn back" aria-label="목록으로" onClick="{{close}}"><svg class="ico" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"></path></svg></button>
+          <span class="p-name">{{d.name}}</span>
+          <span class="{{d.tagCls}}"><span class="dot"></span>{{d.stLabel}}</span>
+          <button class="icon-btn close" aria-label="닫기" onClick="{{close}}"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg></button>
+        </div>
+        <div class="p-grid">
+          <sc-for list="{{d.kv}}" as="kv" hint-placeholder-count="8">
+            <div class="kv"><span class="k">{{kv.k}}</span><span class="v">{{kv.v}}</span></div>
+          </sc-for>
+        </div>
+        <div class="p-actions">
+          <a class="btn sm" href="https://claude.ai/code" target="_blank" rel="noopener"><svg class="ico" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path></svg>원격 제어로 열기</a>
+        </div>
+      </div>
+      <div class="tabs" role="tablist">
+        <button class="{{tabChatCls}}" role="tab" onClick="{{toChat}}">대화 <span class="cnt">{{d.msgCount}}</span></button>
+        <button class="{{tabToolCls}}" role="tab" onClick="{{toTool}}">도구 <span class="cnt">{{d.toolCount}}</span></button>
+      </div>
+      <div class="log">
+        <sc-for list="{{d.log}}" as="e" hint-placeholder-count="5">
+          <sc-if value="{{e.isUser}}" hint-placeholder-val="{{false}}">
+            <div class="{{e.userCls}}"><div class="m-who"><span class="who">사용자</span><span class="via">{{e.via}}</span><span>{{e.t}}</span></div><div class="m-body">{{e.text}}</div></div>
+          </sc-if>
+          <sc-if value="{{e.isAsst}}" hint-placeholder-val="{{false}}">
+            <div class="m m-asst"><div class="m-who"><span class="who">Claude</span><span>{{e.t}}</span></div><div class="m-body">{{e.text}}</div></div>
+          </sc-if>
+          <sc-if value="{{e.isTool}}" hint-placeholder-val="{{true}}">
+            <div>
+              <div class="tool"><span class="tool-name">{{e.name}}</span><span class="tool-arg">{{e.arg}}</span><span class="{{e.resCls}}">{{e.res}}</span></div>
+              <sc-if value="{{e.hasMask}}" hint-placeholder-val="{{false}}">
+                <div class="mask"><code>{{e.mask}}</code><span class="tag neutral"><svg class="ico" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>{{e.maskNote}}</span></div>
+              </sc-if>
+            </div>
+          </sc-if>
+          <sc-if value="{{e.isAsk}}" hint-placeholder-val="{{false}}">
+            <div class="ask">
+              <div class="ask-title"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 8v4M12 16h.01"></path></svg>{{e.title}}</div>
+              <div class="{{e.codeCls}}">{{e.code}}</div>
+              <div class="opts">
+                <sc-for list="{{e.opts}}" as="o" hint-placeholder-count="3"><button class="opt live" onClick="{{o.pick}}">{{o.label}}</button></sc-for>
+              </div>
+              <div class="ask-note"><svg class="ico" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"></path><path d="M22 2 11 13"></path></svg>{{e.note}}</div>
+            </div>
+          </sc-if>
+          <sc-if value="{{e.isSent}}" hint-placeholder-val="{{false}}">
+            <div class="sent"><svg class="ico" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>웹에서 「{{e.label}}」로 답했습니다 · 방금</div>
+          </sc-if>
+          <sc-if value="{{e.isDone}}" hint-placeholder-val="{{false}}">
+            <div class="box ok"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><path d="M22 4 12 14.01l-3-3"></path></svg><div><div class="box-title">{{e.title}}</div><div class="box-text">{{e.text}}</div></div></div>
+          </sc-if>
+          <sc-if value="{{e.isLost}}" hint-placeholder-val="{{false}}">
+            <div class="box warn"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg><div><div class="box-title">{{e.title}}</div><div class="box-text">{{e.text}}</div></div></div>
+          </sc-if>
+          <sc-if value="{{e.isEnd}}" hint-placeholder-val="{{false}}">
+            <div class="box neutral"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><path d="M12 2v10"></path></svg><div><div class="box-title">{{e.title}}</div><div class="box-text">{{e.text}}</div></div></div>
+          </sc-if>
+        </sc-for>
+      </div>
+      <sc-if value="{{d.canSend}}" hint-placeholder-val="{{true}}">
+        <div class="composer">
+          <div class="composer-lbl"><label for="reply-box">클로드에게 보내기</label><span>{{d.sendHint}}</span></div>
+          <div class="composer-row">
+            <textarea id="reply-box" value="{{draft}}" onChange="{{onDraft}}"></textarea>
+            <button class="btn primary" onClick="{{send}}" aria-label="보내기"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"></path><path d="M22 2 11 13"></path></svg>보내기</button>
+          </div>
+        </div>
+      </sc-if>
+      <div class="p-foot"><span class="{{d.footDot}}"></span>{{d.footText}}</div>
+    </sc-if>
+    <sc-if value="{{noSel}}" hint-placeholder-val="{{false}}">
+      <div class="p-empty">
+        <svg class="ico" width="32" height="32" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M14 4v16"></path></svg>
+        <p>카드를 누르면 그 세션의 대화가 여기에 실시간으로 표시됩니다.</p>
+      </div>
+    </sc-if>
+  </aside>
+</div>
+</sc-if>
+
+<sc-if value="{{isDeck}}" hint-placeholder-val="{{false}}">
+  <main class="deck" aria-label="세션 간단히 보기">
+    <sc-for list="{{tiles}}" as="t" hint-placeholder-count="8">
+      <button class="{{t.tileCls}}" onClick="{{t.openDetail}}" aria-label="{{t.name}} · {{t.stLabel}} · 눌러서 상세 보기">
+        <span class="t-head">
+          <span class="t-ico" aria-hidden="true">
+            <sc-if value="{{t.isWaitA}}" hint-placeholder-val="{{false}}"><svg class="ico" width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><path d="M12 8v4M12 16h.01"></path></svg></sc-if>
+            <sc-if value="{{t.isWaitQ}}" hint-placeholder-val="{{false}}"><svg class="ico" width="18" height="18" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"></path></svg></sc-if>
+            <sc-if value="{{t.isDone}}" hint-placeholder-val="{{false}}"><svg class="ico" width="18" height="18" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"></path></svg></sc-if>
+            <sc-if value="{{t.isRun}}" hint-placeholder-val="{{true}}"><svg class="ico spin" width="18" height="18" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.22-8.56"></path></svg></sc-if>
+            <sc-if value="{{t.isLost}}" hint-placeholder-val="{{false}}"><svg class="ico" width="18" height="18" viewBox="0 0 24 24"><path d="M2 2l20 20M8.5 16.5a5 5 0 0 1 7 0M5 12.86a10 10 0 0 1 5.17-2.69M19 12.86a10 10 0 0 0-2.3-1.6M2 8.82a15 15 0 0 1 4.18-2.65M22 8.82a15 15 0 0 0-11.29-3.76M12 20h.01"></path></svg></sc-if>
+            <sc-if value="{{t.isEnd}}" hint-placeholder-val="{{false}}"><svg class="ico" width="18" height="18" viewBox="0 0 24 24"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><path d="M12 2v10"></path></svg></sc-if>
+          </span>
+          <span class="t-time">{{t.short}}</span>
+        </span>
+        <span class="t-name">{{t.name}}</span>
+        <span class="t-state">{{t.stLabel}}</span>
+        <span class="t-meta">{{t.hostLabel}} · {{t.acctLabel}}</span>
+      </button>
+    </sc-for>
+  </main>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"startSel":{"editor":"enum","options":["search-api","blog","vault","status","chat-gateway","shop1","shop2","joy",""],"default":"search-api"},"startMode":{"editor":"enum","options":["detail","deck"],"default":"detail"},"$preview":{"width":1440,"height":1560}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const st = this.state || {};
+    const theme = st.theme || this.props.theme || 'light';
+    const sel = st.sel !== undefined ? st.sel : (this.props.startSel ?? 'search-api');
+    const filter = st.filter || 'all';
+    const tab = st.tab || 'chat';
+    const seen = st.seen || {};
+    const mode = st.mode || this.props.startMode || 'detail';
+
+    const S = {
+      wait: { label: '승인 기다림', tag: 'red' },
+      done: { label: '작업 끝남', tag: 'green' },
+      run: { label: '작업 중', tag: 'blue' },
+      lost: { label: '연락 끊김', tag: 'amber' },
+      end: { label: '종료', tag: 'neutral' }
+    };
+    const acctName = { sk: 'company-a', eco: 'company-b' };
+    const hostName = { home: '집 PC', ora3: 'server-b', build-vm: 'build-vm', cloud: 'cloud-box' };
+
+    const hostsRaw = [
+      { id: 'home', name: '집 PC', meta: 'Windows 11 · Claude Code 2.1.325', online: true, isPc: true },
+      { id: 'ora3', name: 'server-b', meta: 'Ubuntu · ARM · Claude Code 2.1.325', online: true },
+      { id: 'build-vm', name: 'build-vm', meta: 'Ubuntu · 작업 러너 2대', online: true },
+      { id: 'cloud', name: 'cloud-box', meta: 'Ubuntu · 마지막 신호 3시간 전', online: false }
+    ];
+
+    const T = (name, arg, res, extra) => Object.assign({ k: 'tool', name, arg, res }, extra || {});
+    const answered = st.answered || {};
+    const msgs = st.msgs || {};
+    const sessionsRaw = [
+      { id: 'search-api', host: 'home', name: 'search-api', acct: 'sk', status: 'wait', waitKind: '승인', branch: 'main', model: 'Opus 5.5', elapsed: '42분째', updated: '방금', ctx: 64, cost: '$3.12', started: '오늘 09:02', cwd: '~/projects/search-api',
+        act1: 'Bash 실행 승인 요청', act2: 'git push origin main',
+        log: [
+          { k: 'user', t: '09:38', text: '오늘 평가 결과를 정리해서 커밋하고 main에 푸시해 줘.' },
+          { k: 'asst', t: '09:38', text: '평가 결과 3건을 표로 정리한 뒤 커밋하고 푸시하겠습니다.' },
+          T('Read', 'eval/results/2026-11-14.json', '완료 · 0.2초'),
+          T('Bash', 'cat deploy/.env', '완료 · 0.1초', { mask: 'AZURE_OPENAI_API_KEY=••••••••••••', maskNote: '키 1개 가려짐' }),
+          T('Edit', 'docs/eval-2026-11.md  +42 −3', '완료'),
+          T('Bash', 'git commit -m "eval: 전문 모드 3회 평균"', '완료 · 0.4초'),
+          { k: 'asst', t: '09:42', text: '커밋을 만들었습니다. 이제 원격 저장소로 푸시합니다.' },
+          { k: 'ask', t: '09:42', title: 'Bash 실행 승인을 기다립니다', code: 'git push origin main', opts: ['허용', '이 세션 동안 허용', '거부'], note: '누르면 바로 집 PC로 보냅니다. 터미널에서 먼저 답하면 그쪽이 우선합니다.' }
+        ] },
+      { id: 'status', host: 'home', name: 'c-monitor', acct: 'eco', status: 'run', branch: 'feat/sse', model: 'Opus 5.5', elapsed: '12분째', updated: '3초 전', ctx: 31, cost: '$0.84', started: '오늘 10:20', cwd: '~/c-monitor',
+        act1: 'Bash', act2: 'npm test -- stream 실행 중',
+        log: [
+          { k: 'user', t: '10:20', text: 'SSE 스트림에 하트비트 넣고 재연결 테스트까지 해 줘.' },
+          { k: 'asst', t: '10:20', text: 'SSE 핸들러에 15초 하트비트를 추가하고 재연결 테스트를 작성하겠습니다.' },
+          T('Read', 'server/src/stream.ts', '완료 · 0.1초'),
+          T('Edit', 'server/src/stream.ts  +18 −2', '완료'),
+          T('Write', 'server/test/stream.test.ts', '완료'),
+          T('Bash', 'npm test -- stream', '실행 중…', { running: true })
+        ] },
+      { id: 'vault', host: 'home', name: 'notes-sync', acct: 'sk', status: 'done', branch: 'main', model: 'Sonnet 5.5', elapsed: '18분 걸림', updated: '4분 전', ctx: 22, cost: '$0.41', started: '오늘 09:12', cwd: '~/notes-sync',
+        act1: '완료', act2: '이관 스크립트 점검 결과를 정리했습니다.',
+        log: [
+          { k: 'user', t: '09:12', text: '이관 스크립트 다시 점검하고 이상 없으면 결과만 정리해 줘.' },
+          T('Bash', 'aws sts get-caller-identity --profile work-profile', '완료 · 1.2초'),
+          T('Read', 'scripts/migrate.ts', '완료'),
+          T('Bash', 'npm test', '통과 24개 · 9.8초'),
+          { k: 'asst', t: '09:30', text: '점검을 마쳤습니다. 이관 스크립트 3개 모두 정상이고, 드라이런에서 빠진 항목은 없었습니다. 다음 이관 때는 work-profile 프로필로 실행하면 됩니다.' },
+          { k: 'done', title: '작업이 끝났습니다', text: '18분 걸림 · 다음 작업을 시작하면 초록 표시가 꺼집니다.' }
+        ] },
+      { id: 'blog', host: 'ora3', name: 'blog-site', acct: 'eco', status: 'wait', waitKind: '질문', branch: 'drafts', model: 'Opus 5.5', elapsed: '25분째', updated: '1분 전', ctx: 48, cost: '$1.97', started: '오늘 10:02', cwd: '~/blog-site',
+        act1: '질문', act2: '초안 5편 중 어떤 글부터 발행할까요?',
+        log: [
+          { k: 'user', t: '10:02', text: '초안 5편 검토 끝났으면 발행 순서 정해서 올려 줘.' },
+          { k: 'asst', t: '10:03', text: '초안 5편의 맞춤법과 내부 링크를 점검하겠습니다.' },
+          T('Grep', '"](/posts/" drafts/', '14건'),
+          T('Edit', 'drafts/03-rag-eval.md  +6 −6', '완료'),
+          T('Bash', 'npm run build', '완료 · 38초'),
+          { k: 'asst', t: '10:26', text: '점검을 마쳤습니다. 수정할 곳은 2편이었고 모두 고쳤습니다. 발행 순서를 정해 주세요.' },
+          { k: 'ask', t: '10:26', title: '질문에 답해 주세요', q: true, code: '초안 5편 중 어떤 글부터 발행할까요?', opts: ['RAG 평가 회고', '사내 AI 도입 1년', '에이전트 운영 팁', '모두 순서대로'], note: '누르면 바로 server-b로 보냅니다. 아래 입력창에 직접 적어 답해도 됩니다.' }
+        ] },
+      { id: 'chat-gateway', host: 'ora3', name: 'chat-gateway', acct: 'sk', status: 'lost', branch: 'main', model: 'Sonnet 5.5', elapsed: '14분째 소식 없음', updated: '09:51 마지막 신호', ctx: 17, cost: '$0.22', started: '오늘 09:48', cwd: '~/chat-gateway',
+        act1: '마지막 작업', act2: 'Bash · npm run build',
+        log: [
+          { k: 'user', t: '09:49', text: '게이트웨이 빌드하고 재시작해 줘.' },
+          T('Bash', 'npm run build', '응답 없음', { bad: true }),
+          { k: 'lost', title: '14분째 소식이 없습니다', text: '컴퓨터가 꺼졌거나 네트워크가 끊겼을 수 있습니다. 마지막 신호 09:51.' }
+        ] },
+      { id: 'shop1', host: 'build-vm', name: 'drawing-review', acct: 'eco', status: 'run', branch: 'review/1114', model: 'Opus 5.5', elapsed: '1시간 8분째', updated: '방금', ctx: 71, cost: '$6.40', started: '오늘 09:15', cwd: '/home/runner/work',
+        act1: '서브에이전트 3개', act2: '도면 32장 중 19장 검토',
+        log: [
+          { k: 'user', t: '09:15', text: '도면 32장 검토 돌려 줘. 서브에이전트 3개로 나눠서.' },
+          T('Task', '도면 검토 · 서브에이전트 3개', '19 / 32', { running: true }),
+          T('Read', 'drawings/A-114.pdf', '완료')
+        ] },
+      { id: 'shop2', host: 'build-vm', name: 'drawing-review #2', acct: 'eco', status: 'run', branch: 'review/1114', model: 'Sonnet 5.5', elapsed: '22분째', updated: '5초 전', ctx: 28, cost: '$0.93', started: '오늘 10:01', cwd: '/home/runner2/work',
+        act1: 'Read', act2: 'drawings/A-201.pdf',
+        log: [
+          { k: 'user', t: '10:01', text: 'A동 도면만 다시 확인해 줘.' },
+          T('Read', 'drawings/A-201.pdf', '읽는 중…', { running: true })
+        ] },
+      { id: 'joy', host: 'cloud', name: 'homepage', acct: 'sk', status: 'end', branch: 'main', model: 'Opus 5.5', elapsed: '3시간 전 종료', updated: '07:12 종료', ctx: 55, cost: '$2.05', started: '오늘 06:30', cwd: '~/homepage',
+        act1: '종료', act2: '사용자가 세션을 끝냈습니다.',
+        log: [
+          { k: 'user', t: '06:30', text: '메인 배너 섹션 Sanity 스키마 정리해 줘.' },
+          { k: 'asst', t: '07:10', text: '배너 스키마를 정리하고 미리보기까지 확인했습니다.' },
+          { k: 'end', title: '세션이 종료되었습니다', text: '07:12 · 24시간 뒤 기록 탭으로 옮겨집니다.' }
+        ] }
+    ];
+
+    const sessions = sessionsRaw.map((s) => {
+      const ans = answered[s.id];
+      const extra = msgs[s.id] || [];
+      if (!ans && !extra.length) return s;
+      let log = s.log.map((e) => (e.k === 'ask' && ans ? { k: 'sent', label: ans } : e));
+      log = log.concat(extra.map((t) => ({ k: 'user', t: '방금', text: t, remote: true })));
+      log.push(T('…', '웹에서 받은 답으로 작업을 이어 갑니다', '실행 중…', { running: true }));
+      const revive = s.status === 'wait' || s.status === 'done';
+      return Object.assign({}, s, {
+        log,
+        status: revive ? 'run' : s.status,
+        elapsed: revive ? '방금 다시 시작' : s.elapsed,
+        updated: '방금',
+        act1: '웹에서 보냄',
+        act2: ans || extra[extra.length - 1]
+      });
+    });
+
+    const rank = { wait: 0, done: 1, run: 2, lost: 3, end: 4 };
+    const stLabel = (s) => s.status === 'wait' ? (s.waitKind === '질문' ? '질문 기다림' : '승인 기다림') : S[s.status].label;
+    const mk = (s) => {
+      const unseen = s.status === 'wait' && !seen[s.id];
+      return Object.assign({}, s, {
+        stLabel: stLabel(s),
+        tagCls: 'tag ' + S[s.status].tag,
+        cls: 'card s-' + s.status + (unseen ? ' unseen' : '') + (s.status === 'done' ? ' unack' : '') + (sel === s.id ? ' sel' : ''),
+        chipCls: 'chip ' + s.acct,
+        acctLabel: acctName[s.acct],
+        open: () => this.setState({ sel: s.id, tab: 'chat', seen: Object.assign({}, seen, { [s.id]: true }) })
+      });
+    };
+    const pass = (s) => filter === 'all' || s.status === filter;
+    const hosts = hostsRaw.map((h) => {
+      const all = sessions.filter((s) => s.host === h.id);
+      const cards = all.filter(pass).sort((a, b) => rank[a.status] - rank[b.status]).map(mk);
+      return Object.assign({}, h, {
+        isServer: !h.isPc,
+        meta: h.meta + ' · 세션 ' + all.length + '개',
+        onCls: h.online ? 'tag green' : 'tag neutral',
+        onLabel: h.online ? '연결됨' : '오프라인',
+        cards
+      });
+    }).filter((h) => h.cards.length > 0);
+
+    const fdefs = [['all', '전체'], ['wait', '기다림'], ['done', '끝남'], ['run', '작업 중'], ['lost', '끊김'], ['end', '종료']];
+    const filters = fdefs.map(([k, label]) => ({
+      label,
+      on: filter === k ? 'true' : 'false',
+      cnt: k === 'all' ? sessions.length : sessions.filter((s) => s.status === k).length,
+      cls: filter === k ? 'on' : '',
+      dotCls: 'fdot ' + k,
+      pick: () => this.setState({ filter: k })
+    }));
+
+    const lvl = (p) => (p >= 95 ? 'crit' : p >= 80 ? 'warn' : '');
+    const spark = (vals) => vals.map((v, i) => (i * 40) + ',' + (38 - v * 0.36).toFixed(1)).join(' ');
+    const meter = (label, pct, reset) => ({
+      label, pct, reset,
+      fillCls: 'bar-fill ' + lvl(pct),
+      warn: pct >= 80,
+      warnCls: pct >= 95 ? 'tag red' : 'tag amber',
+      warnLabel: pct >= 95 ? '거의 다 씀' : '80% 넘음'
+    });
+    const acct = (o) => Object.assign(o, {
+      fivePct: o.meters[0].pct, weekPct: o.meters[1].pct,
+      fiveCls: lvl(o.meters[0].pct), weekCls: lvl(o.meters[1].pct)
+    });
+    const accounts = [
+      acct({ short: 'company-a', chipCls: 'chip sk', name: 'dev@company-a.example', plan: 'Team · Max 5x', active: false, sparkCls: 'spark-line', sparkRange: '30% → 61%', spark: spark([30, 36, 41, 45, 52, 57, 61]),
+        meters: [meter('5시간 한도', 42, '2시간 13분 뒤 초기화'), meter('주간 한도', 61, '목요일 09:00 초기화')] }),
+      acct({ short: 'company-b', chipCls: 'chip eco', name: 'dev@company-b.example', plan: 'Team · Max 5x', active: true, sparkCls: 'spark-line eco', sparkRange: '4% → 33%', spark: spark([4, 9, 13, 18, 22, 28, 33]),
+        meters: [meter('5시간 한도', 87, '47분 뒤 초기화'), meter('주간 한도', 33, '월요일 14:00 초기화')] })
+    ];
+
+    const shortT = { search-api: '42분째', status: '12분째', vault: '4분 전 끝남', blog: '25분째', chat-gateway: '14분 조용', shop1: '1시간 8분째', shop2: '22분째', joy: '3시간 전' };
+    const tiles = sessions.slice().sort((a, b) => rank[a.status] - rank[b.status]).map((s) => {
+      const c = mk(s);
+      const unseen = s.status === 'wait' && !seen[s.id];
+      return Object.assign(c, {
+        short: shortT[s.id],
+        hostLabel: hostName[s.host],
+        tileCls: 'tile k-' + s.status + (unseen ? ' unseen' : '') + (s.status === 'done' ? ' unack' : ''),
+        isWaitA: s.status === 'wait' && s.waitKind !== '질문',
+        isWaitQ: s.status === 'wait' && s.waitKind === '질문',
+        isDone: s.status === 'done', isRun: s.status === 'run', isLost: s.status === 'lost', isEnd: s.status === 'end',
+        openDetail: () => this.setState({ mode: 'detail', sel: s.id, tab: 'chat', seen: Object.assign({}, seen, { [s.id]: true }) })
+      });
+    });
+
+    const cur = sessions.find((s) => s.id === sel);
+    let d = null;
+    if (cur) {
+      const log = cur.log.map((e) => Object.assign({}, e, {
+        isUser: e.k === 'user', isAsst: e.k === 'asst', isTool: e.k === 'tool', isAsk: e.k === 'ask',
+        isDone: e.k === 'done', isLost: e.k === 'lost', isEnd: e.k === 'end', isSent: e.k === 'sent',
+        hasMask: !!e.mask,
+        userCls: 'm m-user' + (e.remote ? ' remote' : ''),
+        via: e.remote ? '웹에서 보냄' : '',
+        resCls: 'tool-res' + (e.running ? ' run' : e.bad ? ' bad' : ''),
+        codeCls: e.q ? 'code q' : 'code',
+        opts: (e.opts || []).map((o) => ({ label: o, pick: () => this.setState({ answered: Object.assign({}, answered, { [cur.id]: o }) }) }))
+      }));
+      const tools = log.filter((e) => e.isTool);
+      d = {
+        name: cur.name,
+        stLabel: stLabel(cur),
+        tagCls: 'tag ' + S[cur.status].tag,
+        kv: [
+          { k: '클로드 계정', v: cur.acct === 'sk' ? 'dev@company-a.example' : 'dev@company-b.example' },
+          { k: '컴퓨터', v: hostName[cur.host] },
+          { k: '폴더', v: cur.cwd },
+          { k: '브랜치', v: cur.branch },
+          { k: '모델', v: cur.model },
+          { k: '시작', v: cur.started },
+          { k: '컨텍스트', v: cur.ctx + '% 사용' },
+          { k: '비용(추정)', v: cur.cost }
+        ],
+        msgCount: log.filter((e) => e.isUser || e.isAsst).length,
+        toolCount: tools.length,
+        log: tab === 'tool' ? tools : log,
+        footDot: cur.status === 'end' || cur.status === 'lost' ? 'live-dot off' : 'live-dot',
+        footText: cur.status === 'end' ? '종료된 세션입니다 · 기록만 볼 수 있습니다' : cur.status === 'lost' ? '신호를 기다리는 중입니다 · 연결되면 보낼 수 있습니다' : '실시간으로 받는 중',
+        canSend: cur.status !== 'end' && cur.status !== 'lost',
+        sendHint: cur.status === 'wait' ? '이 글로 질문·승인에 답합니다' : cur.status === 'run' ? '지금 작업이 끝나면 이어서 전달됩니다' : '다음 지시로 바로 전달됩니다'
+      };
+    }
+
+    const alertCount = sessions.filter((s) => s.status === 'wait' && !seen[s.id]).length;
+
+    return {
+      appCls: (theme === 'dark' ? 'dark' : '') + (d && mode === 'detail' ? ' open' : '') + (mode === 'deck' ? ' deckmode' : ''),
+      isDeck: mode === 'deck',
+      isDetail: mode !== 'deck',
+      toggleMode: () => this.setState({ mode: mode === 'deck' ? 'detail' : 'deck' }),
+      modeAria: mode === 'deck' ? '상세 화면으로' : '간단히 보기로',
+      tiles,
+      isDark: theme === 'dark',
+      isLight: theme !== 'dark',
+      toggleTheme: () => this.setState({ theme: theme === 'dark' ? 'light' : 'dark' }),
+      alertCount,
+      hasAlert: alertCount > 0,
+      accounts,
+      filters,
+      hosts,
+      hasSel: !!d,
+      noSel: !d,
+      d: d || { kv: [], log: [] },
+      yes: true,
+      close: () => this.setState({ sel: null }),
+      draft: st.draft || '',
+      onDraft: (ev) => this.setState({ draft: ev.target.value }),
+      send: () => {
+        const t = (st.draft || '').trim();
+        if (!t || !cur) return;
+        this.setState({ draft: '', msgs: Object.assign({}, msgs, { [cur.id]: (msgs[cur.id] || []).concat([t]) }) });
+      },
+      tabChatCls: tab === 'chat' ? 'on' : '',
+      tabToolCls: tab === 'tool' ? 'on' : '',
+      toChat: () => this.setState({ tab: 'chat' }),
+      toTool: () => this.setState({ tab: 'tool' })
+    };
+  }
+}
+</script>
+</body>
+</html>
