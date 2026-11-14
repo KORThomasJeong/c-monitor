@@ -22,6 +22,10 @@ const PATTERN = new RegExp(
     '(?<slack>\\bxox[bp]-[A-Za-z0-9-]{10,})',
     // Google API 키
     '(?<google>\\bAIza[0-9A-Za-z_-]{35})',
+    // Google OAuth 클라이언트 보안 비밀
+    '(?<goauth>\\bGOCSPX-[A-Za-z0-9_-]{20,})',
+    // Google OAuth 액세스 토큰
+    '(?<gtoken>\\bya29\\.[A-Za-z0-9._-]{20,})',
   ].join('|'),
   'gi',
 );
@@ -29,6 +33,7 @@ const PATTERN = new RegExp(
 // 대소문자를 가려야 하는 갈래(일반 단어와 헷갈리지 않게)
 const CASE_SENSITIVE = {
   jwt: /^eyJ/, sk: /^sk-/, gh: /^(gh[pousr]_|github_pat_)/, aws: /^AKIA[0-9A-Z]{16}$/, slack: /^xox[bp]-/, google: /^AIza/,
+  goauth: /^GOCSPX-/, gtoken: /^ya29\./,
 };
 
 /** 글 안의 비밀을 가린다. → {text, count(가린 개수)} */

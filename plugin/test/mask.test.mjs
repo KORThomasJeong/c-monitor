@@ -13,6 +13,9 @@ const fake = {
   xoxb: 'xo' + 'xb-' + '1234567890-abcdefghijklmnop',
   xoxp: 'xo' + 'xp-' + '1234567890-abcdefghijklmnop',
   aiza: 'AI' + 'za' + 'SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q',
+  // 구글 OAuth 클라이언트 보안 비밀과 액세스 토큰
+  gocspx: 'GOC' + 'SPX-' + 'a1B2c3D4e5F6g7H8i-J0k1L2m3N4',
+  ya29: 'ya' + '29.' + 'a0AfH6SMBx1y2Z3a4B5c6D7e8F9g0H_i-J',
   jwt: 'ey' + 'JhbGciOiJIUzI1NiJ9' + '.' + 'ey' + 'JzdWIiOiIxMjM0NTY3ODkwIn0' + '.' + 'dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk',
 };
 
