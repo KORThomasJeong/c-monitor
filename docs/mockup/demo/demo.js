@@ -146,11 +146,13 @@
   var meId = ME_BY_KIND[userKind];
   var loggedIn = startPath !== '/login';
 
+  /** 데모 컴퓨터의 플러그인 버전. plugin/.claude-plugin/plugin.json 의 version 과 맞춘다(올릴 때 같이 고친다). */
+  var PLUGIN_VER = '0.3.1';
   var machines = [
-    { id: 'm-home', name: '집 PC', os: 'Windows 11', pluginVersion: '0.2.0', lastSeenAt: ago(0), online: true, remoteReply: true },
-    { id: 'm-srv', name: 'server-a', os: 'Ubuntu 24.04', pluginVersion: '0.2.0', lastSeenAt: ago(0.5), online: true, remoteReply: true },
-    { id: 'm-build', name: 'build-vm', os: 'Ubuntu 22.04', pluginVersion: '0.2.0', lastSeenAt: ago(1), online: true, remoteReply: true },
-    { id: 'm-cloud', name: 'cloud-box', os: 'Debian 12', pluginVersion: '0.2.0', lastSeenAt: ago(38), online: false, remoteReply: true },
+    { id: 'm-home', name: '집 PC', os: 'Windows 11', pluginVersion: PLUGIN_VER, lastSeenAt: ago(0), online: true, remoteReply: true },
+    { id: 'm-srv', name: 'server-a', os: 'Ubuntu 24.04', pluginVersion: PLUGIN_VER, lastSeenAt: ago(0.5), online: true, remoteReply: true },
+    { id: 'm-build', name: 'build-vm', os: 'Ubuntu 22.04', pluginVersion: PLUGIN_VER, lastSeenAt: ago(1), online: true, remoteReply: true },
+    { id: 'm-cloud', name: 'cloud-box', os: 'Debian 12', pluginVersion: PLUGIN_VER, lastSeenAt: ago(38), online: false, remoteReply: true },
   ];
 
   function history7(values) {
@@ -204,16 +206,36 @@
   /** 다른 사용자의 컴퓨터(관리 › 컴퓨터, 관리자가 남의 대시보드를 볼 때) */
   var OTHER_MACHINES = {
     'u-member': [
-      { id: 'm-mem-lap', name: '홍길동 노트북', os: 'macOS 15', pluginVersion: '0.3.0', lastSeenAt: ago(1), online: true, remoteReply: true },
+      { id: 'm-mem-lap', name: '홍길동 노트북', os: 'macOS 15', pluginVersion: PLUGIN_VER, lastSeenAt: ago(1), online: true, remoteReply: true },
     ],
     'u-design': [
-      { id: 'm-des', name: '디자인 맥', os: 'macOS 14', pluginVersion: '0.2.0', lastSeenAt: ago(0.5), online: true, remoteReply: false },
+      { id: 'm-des', name: '디자인 맥', os: 'macOS 14', pluginVersion: PLUGIN_VER, lastSeenAt: ago(0.5), online: true, remoteReply: false },
     ],
     'u-leave': [
+      // 일부러 낮은 버전(원격 답장 최소 0.2.0 미만): 관리 › 컴퓨터에서 "업데이트 필요" 태그를 보여 주는 예시.
       { id: 'm-leave', name: 'old-desktop', os: 'Windows 10', pluginVersion: '0.1.0', lastSeenAt: ago(2 * 24 * 60), online: false, remoteReply: false },
     ],
   };
   var OTHER_ACCOUNTS = { 'u-member': 'dev@company-b.example', 'u-design': 'dev@company-c.example', 'u-leave': null };
+  /** 다른 사용자의 클로드 계정 한도(관리자가 남의 대시보드를 볼 때 그 사람의 한도 카드). 서버도 그 사용자의 계정을 돌려준다. */
+  var OTHER_LIMITS = {
+    'u-member': [
+      {
+        email: 'dev@company-b.example', alias: '팀', hidden: false,
+        fiveHourPct: 42, fiveHourResetsAt: sec(T0 + 150 * MIN),
+        sevenDayPct: 57, sevenDayResetsAt: sec(T0 + (2 * 24 * 60 + 8 * 60) * MIN),
+        at: ago(1), history: history7([18, 24, 31, 38, 44, 51, 57]),
+      },
+    ],
+    'u-design': [
+      {
+        email: 'dev@company-c.example', alias: null, hidden: false,
+        fiveHourPct: 9, fiveHourResetsAt: sec(T0 + 240 * MIN),
+        sevenDayPct: 22, sevenDayResetsAt: sec(T0 + 6 * 24 * 60 * MIN),
+        at: ago(0.5), history: history7([5, 8, 11, 14, 17, 19, 22]),
+      },
+    ],
+  };
   /** 관리자가 남의 대시보드를 볼 때의 한 화면분(쓰기 정보는 비운다). 내 것이면 평소 스냅샷. */
   function snapshotFor(uid, all) {
     if (!uid || uid === meId) return snapshot(all);
@@ -226,7 +248,7 @@
       v.remoteUrl = null;
       return v;
     });
-    return { sessions: list, machines: clone(OTHER_MACHINES[uid] || []), accounts: [] };
+    return { sessions: list, machines: clone(OTHER_MACHINES[uid] || []), accounts: clone(OTHER_LIMITS[uid] || []) };
   }
   /** 공개 링크 보기(PublicSessionView). 없거나 만료·세션 삭제면 null. */
   function publicView(token) {
@@ -1433,7 +1455,7 @@
       var c = normalizeUserCode(body && body.userCode);
       if (!c || usedCodes[c]) return notFound();
       usedCodes[c] = true;
-      var nm = { id: 'm-new-' + c.replace('-', '').toLowerCase(), name: '노트북', os: 'macOS 15', pluginVersion: '0.2.0', lastSeenAt: nowIso(), online: true, remoteReply: true };
+      var nm = { id: 'm-new-' + c.replace('-', '').toLowerCase(), name: '노트북', os: 'macOS 15', pluginVersion: PLUGIN_VER, lastSeenAt: nowIso(), online: true, remoteReply: true };
       machines.push(nm);
       publish({ type: 'machine', machine: clone(nm) });
       return J(200, { ok: true, machineName: nm.name });

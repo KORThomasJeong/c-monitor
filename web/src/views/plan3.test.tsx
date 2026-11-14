@@ -196,6 +196,8 @@ describe('공유받은 세션', () => {
     await user.click(within(group).getByRole('button', { name: /^friend-live · / }));
     const p = panel();
     expect(within(p).getByText('공유한 사람')).toBeInTheDocument();
+    // 남의 컴퓨터 정보는 없는 게 정상이라 "컴퓨터 —" 줄 대신 공유한 사람을 보인다.
+    expect(within(p).queryByText('컴퓨터')).not.toBeInTheDocument();
     expect(within(p).queryByRole('button', { name: '공유' })).not.toBeInTheDocument();
     expect(within(p).queryByRole('button', { name: '세션 지우기' })).not.toBeInTheDocument();
     expect(within(p).queryByRole('switch')).not.toBeInTheDocument();
@@ -203,6 +205,18 @@ describe('공유받은 세션', () => {
     expect(within(p).getByText('friend@example.com님이 공유한 세션입니다. 보기만 할 수 있습니다.')).toBeInTheDocument();
     expect(within(p).getByText('세션 주인이 답하면 이어서 진행됩니다.')).toBeInTheDocument();
     expect(api.markSeen).not.toHaveBeenCalled();
+  });
+});
+
+describe('간단히 보기의 공유받은 타일', () => {
+  it('컴퓨터 줄에 "알 수 없는 컴퓨터" 대신 "○○ 공유"를 보인다', async () => {
+    localStorage.setItem('cs-mode', 'deck');
+    render(<App />);
+    await screen.findByRole('main', { name: '세션 간단히 보기' }, { timeout: 5000 });
+    emit(snapshot());
+    const tile = screen.getByRole('button', { name: /^friend-live · / });
+    expect(within(tile).getByText(/^friend@example\.com 공유 · /)).toBeInTheDocument();
+    expect(screen.queryByText(/알 수 없는 컴퓨터/)).not.toBeInTheDocument();
   });
 });
 

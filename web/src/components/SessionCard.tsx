@@ -123,7 +123,7 @@ export function SessionTile({ s, acct, machineName, now, onOpen, onDelete }: Til
         <span className="t-name">{s.name}</span>
         <span className="t-state">
           {label}
-          {answer && <span className="t-reply"><SendIcon size={12} />{ask} · 눌러서 답하기</span>}
+          {answer && <span className="t-reply"><SendIcon size={12} />{ask}<span className="t-reply-more"> · 눌러서 답하기</span></span>}
         </span>
         <span className="t-meta">{machineName} · {acct.label}</span>
       </button>

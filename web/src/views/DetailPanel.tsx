@@ -456,12 +456,13 @@ export function DetailPanel(props: Props) {
     ]
     : [
       ['클로드 계정', s.account ?? '—'],
-      ['컴퓨터', machine?.name ?? '—'],
+      // 공유받은 세션은 남의 컴퓨터라 정보가 없는 게 정상이다. "—" 대신 공유한 사람을 보인다.
+      s.sharedBy && !machine ? ['공유한 사람', s.sharedBy] : ['컴퓨터', machine?.name ?? '—'],
       ['폴더', s.cwd],
       ['브랜치', s.branch ?? '—'],
       ['모델', s.model ?? '—'],
       ['시작', formatClock(s.startedAt, now)],
-      ...(s.sharedBy ? [['공유한 사람', s.sharedBy] as [string, string]] : []),
+      ...(s.sharedBy && machine ? [['공유한 사람', s.sharedBy] as [string, string]] : []),
     ];
   const ctx = ctxText(s.contextPct);
   const cost = s.costUsd == null ? null : formatUsd(s.costUsd);
@@ -533,7 +534,7 @@ export function DetailPanel(props: Props) {
                 <ExternalIcon size={14} />원격 제어로 열기
               </a>
             ) : remoteHint ? (
-              <p className="remote-hint"><InfoIcon size={14} />세션에서 <code>/remote-control</code> 을 실행하면 원격 제어 링크가 생깁니다</p>
+              <p className="remote-hint"><InfoIcon size={14} /><span>세션에서 <code>/remote-control</code> 을 실행하면 원격 제어 링크가 생깁니다</span></p>
             ) : null}
             {ntSwitch && notify && <NotifySwitch s={s} ctl={notify} />}
           </div>

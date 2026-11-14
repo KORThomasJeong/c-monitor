@@ -12,6 +12,13 @@ type Props = {
   onDelete?: (id: string) => void;
 };
 
+/** 타일의 컴퓨터 줄. 공유받은 세션은 남의 컴퓨터라 정보가 없으므로 "○○ 공유"로 보인다. */
+export function machineLabel(s: SessionView, nameOf: Map<string, string>): string {
+  const name = nameOf.get(s.machineId);
+  if (name) return name;
+  return s.sharedBy ? `${s.sharedBy} 공유` : '알 수 없는 컴퓨터';
+}
+
 export function Deck({ sessions, machines, styleOf, now, onOpen, onDelete }: Props) {
   const nameOf = new Map(machines.map((m) => [m.id, m.name]));
   return (
@@ -22,7 +29,7 @@ export function Deck({ sessions, machines, styleOf, now, onOpen, onDelete }: Pro
           key={s.id}
           s={s}
           acct={styleOf(s.account)}
-          machineName={nameOf.get(s.machineId) ?? '알 수 없는 컴퓨터'}
+          machineName={machineLabel(s, nameOf)}
           now={now}
           onOpen={onOpen}
           onDelete={s.sharedBy ? undefined : onDelete}

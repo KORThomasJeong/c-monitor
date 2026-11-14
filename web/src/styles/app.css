@@ -222,6 +222,8 @@
 .sw:checked{background:var(--primary)}
 .sw:checked::after{transform:translateX(16px)}
 .sw:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+/* 표 안 스위치 + "업데이트 필요" 태그: 나란히 두고, 칸이 좁으면 태그가 아래 줄로 내려간다 */
+.sw-cell{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;vertical-align:middle}
 .store{display:flex;flex-direction:column;gap:8px}
 .store-bar{display:flex;height:8px;border-radius:999px;overflow:hidden;background:var(--border2)}
 .store-bar span{display:block;height:100%}

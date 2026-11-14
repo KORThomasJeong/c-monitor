@@ -19,6 +19,8 @@
 .tile .t-name{display:block;font-size:20px;font-weight:600;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:auto}
 .t-state{font-size:14px;font-weight:600;color:var(--sub)}
 .tile .t-meta{display:block;font-size:12px;color:var(--ter);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 이름·컴퓨터 줄은 overflow:hidden이라 타일이 좁으면 높이 0까지 줄어 사라진다. 줄어들지 않게 둔다. */
+.tile .t-name,.tile .t-meta{flex-shrink:0}
 
 .tile.k-wait{border-color:var(--danger);background:var(--danger-soft)}
 .tile.k-wait .t-state{color:var(--danger-text)}
@@ -124,7 +126,9 @@
 .reply .sent{margin:0}
 /* 상세 패널: 원격 제어 링크와 답할 수 없는 까닭 */
 .p-actions{align-items:center}
-.remote-hint{display:flex;align-items:center;gap:6px;margin:0;font-size:12px;color:var(--ter)}
+.remote-hint{display:flex;align-items:flex-start;gap:6px;margin:0;font-size:12px;line-height:1.5;color:var(--ter);flex:1 1 240px;min-width:0}
+.remote-hint svg{flex:none;margin-top:2px}
+.remote-hint > span{min-width:0}
 .remote-hint code{font-family:var(--mono);color:var(--sub)}
 .reply-off{display:flex;align-items:center;gap:8px;padding:12px 20px;border-top:1px solid var(--border2);font-size:12px;color:var(--sub);background:var(--sunken)}
 .composer-foot{display:flex;justify-content:space-between;gap:8px;font-size:12px;color:var(--primary-soft-text)}
@@ -134,6 +138,12 @@
 /* 간단히 보기: 답할 수 있는 타일 */
 .t-state{flex-wrap:wrap;align-items:center;gap:4px 8px}
 .t-reply{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 6px;border-radius:4px;background:var(--danger);color:#fff;font-size:12px;font-weight:500;white-space:nowrap}
+/* 휴대폰 가로: 타일 높이가 낮아 칩이 다음 줄로 넘어가면 이름·컴퓨터 줄이 밀려난다. "승인"·"질문"만 남겨 상태와 한 줄에 둔다. */
+@media (orientation:landscape) and (max-height:500px){
+  .t-state{flex-wrap:nowrap;overflow:hidden}
+  .t-reply{height:18px;padding:0 4px;flex:none}
+  .t-reply-more{display:none}
+}
 @media (pointer:coarse){
   .opt.live{min-height:40px}
 }
