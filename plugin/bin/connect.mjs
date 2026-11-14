@@ -116,13 +116,16 @@ async function startRequest(serverArg, { noOpen }) {
   const expiresIn = Number.isFinite(start.json.expiresIn) && start.json.expiresIn > 0 ? start.json.expiresIn : 600;
 
   const opened = await openBrowser(verifyUrl, { noOpen });
-  say('● 서버에 연결을 요청했습니다.');
-  say(opened
-    ? '  브라우저를 열었습니다. 구글로 로그인한 뒤 코드를 확인하고 승인해 주세요. (열리지 않았다면 아래 링크로 들어가면 됩니다.)'
-    : '  아래 링크를 직접 열어 주세요. 구글로 로그인한 뒤 코드를 확인하고 승인하면 됩니다.');
-  say('');
-  say(`  ${verifyUrl}`);
+  // 클로드코드는 도구 출력을 앞 몇 줄만 보여 주고 접는다. 클로드가 답에서 링크를 빠뜨려도
+  // 사용자가 볼 수 있게 링크와 확인 코드를 맨 앞 두 줄에 둔다.
+  say(`● 승인 링크  ${verifyUrl}`);
   say(`  확인 코드  ${userCode}`);
+  say('');
+  say('  서버에 연결을 요청했습니다.');
+  say(opened
+    ? '  브라우저를 열었습니다. 구글로 로그인한 뒤 코드를 확인하고 승인해 주세요. (열리지 않았다면 위 링크로 들어가면 됩니다.)'
+    : '  아래 링크를 직접 열어 주세요. 구글로 로그인한 뒤 코드를 확인하고 승인하면 됩니다.');
+  say(`  ${verifyUrl}`);
   say('');
   say(`  ${Math.max(1, Math.round(expiresIn / 60))}분 안에 승인하지 않으면 코드가 만료됩니다.`);
   return { server, deviceCode, userCode, verifyUrl, interval, expiresAt: Date.now() + expiresIn * 1000 };

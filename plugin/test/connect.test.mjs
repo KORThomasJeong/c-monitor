@@ -260,6 +260,10 @@ describe('connect.mjs — 두 단계 연결(--start / --wait)', () => {
       expect(out).toContain('아래 링크를 직접 열어 주세요');
       expect(out).not.toContain('브라우저를 열었습니다');
       expect(out).not.toContain('dev-code-1'); // 기기 코드는 화면에 찍지 않는다
+      // 클로드코드는 도구 출력을 앞 몇 줄만 보여 주고 접는다. 링크와 코드는 맨 앞 두 줄에 둔다.
+      const [l1, l2] = out.split('\n');
+      expect(l1).toContain('http://x.test/connect');
+      expect(l2).toContain('K7QM-2XPA');
 
       // 기다리지 않는다: poll은 한 번도 하지 않았다
       expect(server.requests.map((q) => q.url)).toEqual(['/api/device/start']);
