@@ -9,26 +9,24 @@
 //
 // 두 단계로 나눈 이유: 클로드코드의 Bash 도구는 명령이 끝나야 출력을 보여 주므로,
 // 링크를 출력하고 기다리기까지 한 번에 하면 사용자가 링크를 보지 못한 채 기다리게 된다.
-import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { readAccount } from '../lib/account.mjs';
 import { openBrowser } from '../lib/browser.mjs';
 import {
   claudeConfigDir, deleteConfig, deletePending, loadConfig, loadPending, pluginVersion, saveConfig, savePending,
-  statusHome, writeJsonAtomic,
+  writeJsonAtomic,
 } from '../lib/config.mjs';
 import { osLabel } from '../lib/os.mjs';
 import { queueSize } from '../lib/queue.mjs';
 import { postJson } from '../lib/send.mjs';
+import { installWrapperFile, wrapperPath } from '../lib/wrapper.mjs';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
 const say = (line = '') => process.stdout.write(line + '\n');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const settingsPath = () => join(claudeConfigDir(), 'settings.json');
-const wrapperPath = () => join(statusHome(), 'bin', 'statusline.mjs');
 /** settings.json에 등록하는 명령. Windows에서도 슬래시 경로를 써서 어떤 셸에서든 같게 읽히게 한다. */
 const wrapperCommand = () => `node "${wrapperPath().replace(/\\/g, '/')}"`;
 const isWrapper = (statusLine) => typeof statusLine?.command === 'string' && statusLine.command === wrapperCommand();
@@ -56,8 +54,7 @@ function writeSettings(settings, existed) {
  * original: 감싸기 전의 statusLine 값(없었으면 null). 이미 감싸져 있으면 previousOriginal을 그대로 쓴다.
  */
 function installStatusLine(previousOriginal) {
-  mkdirSync(dirname(wrapperPath()), { recursive: true });
-  copyFileSync(join(HERE, 'statusline.mjs'), wrapperPath());
+  installWrapperFile();
 
   const { exists, settings } = readSettings();
   if (settings === null) return { ok: false, original: previousOriginal ?? null };

@@ -239,3 +239,52 @@ describe('hook.mjs', () => {
     } finally { await server.close(); }
   });
 });
+
+describe('hook.mjs — 상태줄 래퍼 따라 올리기', () => {
+  const wrapper = () => join(sb.statusHome, 'bin', 'statusline.mjs');
+  const shipped = () => readFileSync(BIN('statusline.mjs'), 'utf8');
+  const version = () => JSON.parse(readFileSync(join(BIN('..'), '.claude-plugin', 'plugin.json'), 'utf8')).version;
+  const connectAs = (pluginVersion) => writeFileSync(join(sb.statusHome, 'config.json'), JSON.stringify({
+    server: 'http://127.0.0.1:1', token: 'tok-1', machineId: 'm-1', machineName: '집 PC', originalStatusLine: null,
+    ...(pluginVersion === undefined ? {} : { pluginVersion }),
+  }));
+  const oldWrapper = () => {
+    mkdirSync(join(sb.statusHome, 'bin'), { recursive: true });
+    writeFileSync(wrapper(), '// 옛 래퍼\n');
+  };
+
+  it('플러그인이 설정에 적힌 버전보다 새것이면 래퍼 복사본을 바꾸고 버전을 올린다', async () => {
+    connectAs('0.0.1');
+    oldWrapper();
+    const r = await run(hookInput('UserPromptSubmit', { prompt: '안녕' }));
+    expect(r.code).toBe(0);
+    expect(readFileSync(wrapper(), 'utf8')).toBe(shipped());
+    expect(readConfig()).toMatchObject({ pluginVersion: version(), token: 'tok-1', machineName: '집 PC' });
+    expect(readdirSync(join(sb.statusHome, 'bin'))).toEqual(['statusline.mjs']); // 임시 파일이 남지 않는다
+  });
+
+  it('버전이 적혀 있지 않은 예전 설정도 올린다', async () => {
+    connectAs(undefined);
+    oldWrapper();
+    await run(hookInput('Stop'));
+    expect(readFileSync(wrapper(), 'utf8')).toBe(shipped());
+    expect(readConfig().pluginVersion).toBe(version());
+  });
+
+  it('버전이 같거나 설정 쪽이 더 높으면 래퍼를 건드리지 않는다', async () => {
+    for (const v of [version(), '99.0.0']) {
+      connectAs(v);
+      oldWrapper();
+      await run(hookInput('Stop'));
+      expect(readFileSync(wrapper(), 'utf8')).toBe('// 옛 래퍼\n');
+      expect(readConfig().pluginVersion).toBe(v);
+    }
+  });
+
+  it('래퍼를 설치한 적이 없으면 파일을 만들지 않고 버전만 올린다', async () => {
+    connectAs('0.0.1');
+    await run(hookInput('Stop'));
+    expect(existsSync(wrapper())).toBe(false);
+    expect(readConfig().pluginVersion).toBe(version());
+  });
+});

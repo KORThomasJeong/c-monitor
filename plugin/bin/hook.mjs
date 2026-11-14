@@ -12,6 +12,7 @@ import { osLabel } from '../lib/os.mjs';
 import { clearQueue, enqueue, flush, splitBatches } from '../lib/queue.mjs';
 import { postJson } from '../lib/send.mjs';
 import { readTranscriptDelta } from '../lib/transcript.mjs';
+import { syncWrapper } from '../lib/wrapper.mjs';
 
 const STARTED = Date.now();
 /** 전송에 쓸 수 있는 시간. 이 시각이 지나면 남은 큐는 다음 훅으로 미룬다. */
@@ -113,6 +114,11 @@ async function main() {
   const cfg = loadConfig();
   if (!cfg) return; // 연결 전이면 아무것도 하지 않는다
   if (cfg.revokedAt) return; // 서버에서 연결을 해제했으면 쌓지도 보내지도 않는다(다시 연결하면 풀린다)
+
+  // 플러그인이 업데이트됐으면 상태줄 래퍼 복사본도 따라 바꾼다. 실패해도 전송은 계속한다.
+  try {
+    syncWrapper(cfg);
+  } catch { /* 다음 훅에서 다시 시도한다 */ }
 
   let input;
   try {

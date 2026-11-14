@@ -103,13 +103,17 @@ export function queryRoutes(deps: Deps): Hono<Env> {
     const id = c.req.param('id');
     const user = requireUser(c);
     const result = await sql.begin(async (tx): Promise<'not_found' | 'active' | 'deleted'> => {
-      const [row] = await tx<{ user_id: string; status: SessionStatus }[]>`
-        SELECT user_id, status FROM sessions WHERE id = ${id} FOR UPDATE`;
+      const [row] = await tx<{ user_id: string; machine_id: string; status: SessionStatus }[]>`
+        SELECT user_id, machine_id, status FROM sessions WHERE id = ${id} FOR UPDATE`;
       if (!row || row.user_id !== user.id) return 'not_found';
       if (!DELETABLE_STATUSES.includes(row.status)) return 'active';
       await tx`DELETE FROM shares WHERE session_id = ${id}`;
       await tx`DELETE FROM transcript_lines WHERE session_id = ${id}`;
       await tx`DELETE FROM sessions WHERE id = ${id}`;
+      // 지운 표시를 남긴다 — 늦게 도착한 옛 이벤트나 종료 알림으로 카드가 다시 생기지 않게(ingest/apply.ts).
+      await tx`
+        INSERT INTO deleted_sessions (session_id, machine_id, deleted_at) VALUES (${id}, ${row.machine_id}, ${deps.now()})
+        ON CONFLICT (session_id) DO UPDATE SET deleted_at = EXCLUDED.deleted_at`;
       return 'deleted';
     });
     if (result === 'not_found') throw fail(404, 'not_found');

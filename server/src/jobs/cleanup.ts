@@ -2,8 +2,10 @@
 import type { Deps } from '../types';
 
 const EVENT_ID_KEEP_DAYS = 7;
+/** 지운 세션 표시를 남겨 두는 기간. 오래 열어 둔 세션의 종료 알림까지 막을 만큼 넉넉하게. */
+const DELETED_KEEP_DAYS = 30;
 
-export type CleanupResult = { lines: number; limits: number; webSessions: number; deviceRequests: number; eventIds: number };
+export type CleanupResult = { lines: number; limits: number; webSessions: number; deviceRequests: number; eventIds: number; deletedSessions: number };
 
 export async function runCleanup(deps: Pick<Deps, 'sql' | 'now'>): Promise<CleanupResult> {
   const { sql } = deps;
@@ -25,6 +27,8 @@ export async function runCleanup(deps: Pick<Deps, 'sql' | 'now'>): Promise<Clean
   const deviceRequests = await sql`DELETE FROM device_requests WHERE expires_at < ${now}`;
   const eventIds = await sql`
     DELETE FROM event_ids WHERE at < ${now}::timestamptz - make_interval(days => ${EVENT_ID_KEEP_DAYS})`;
+  const deletedSessions = await sql`
+    DELETE FROM deleted_sessions WHERE deleted_at < ${now}::timestamptz - make_interval(days => ${DELETED_KEEP_DAYS})`;
 
   return {
     lines: lines.count,
@@ -32,5 +36,6 @@ export async function runCleanup(deps: Pick<Deps, 'sql' | 'now'>): Promise<Clean
     webSessions: webSessions.count,
     deviceRequests: deviceRequests.count,
     eventIds: eventIds.count,
+    deletedSessions: deletedSessions.count,
   };
 }

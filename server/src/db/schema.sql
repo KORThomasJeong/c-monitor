@@ -99,6 +99,15 @@ CREATE TABLE IF NOT EXISTS transcript_lines (
 );
 CREATE INDEX IF NOT EXISTS transcript_lines_at_idx ON transcript_lines (at);
 
+-- 사용자가 지운 세션의 표시. 지우기 전에 생긴 이벤트가 늦게 도착하거나 종료 알림만 와서
+-- 지운 카드가 다시 생기는 일을 막는다. 그 세션이 실제로 다시 움직이면 표시를 지우고 새로 만든다.
+CREATE TABLE IF NOT EXISTS deleted_sessions (
+  session_id  text PRIMARY KEY,
+  machine_id  text NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+  deleted_at  timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS deleted_sessions_at_idx ON deleted_sessions (deleted_at);
+
 -- 한도 기록. resets는 epoch 초.
 CREATE TABLE IF NOT EXISTS limits (
   user_id       text NOT NULL REFERENCES users(id) ON DELETE CASCADE,

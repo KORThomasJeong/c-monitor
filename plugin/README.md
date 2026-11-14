@@ -104,6 +104,7 @@ bin/connect.mjs     연결(--start / --wait)·상태·해제 명령
 bin/statusline.mjs  상태줄 래퍼(lib를 쓰지 않는 자급형 — 복사돼서 실행됨)
 lib/config.mjs      저장 위치·설정 파일·진행 중인 연결 요청(pending.json)
 lib/os.mjs          운영체제 표기(연결·훅·상태줄 래퍼가 같은 값을 보냄)
+lib/wrapper.mjs     상태줄 래퍼 복사본 설치, 플러그인 업데이트 뒤 자동 교체
 lib/browser.mjs     승인 링크를 기본 브라우저로 열기
 lib/account.mjs     클로드 계정 이메일
 lib/mask.mjs        비밀 가림

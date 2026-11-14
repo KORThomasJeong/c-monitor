@@ -1,6 +1,7 @@
 // 세션 삭제: 종료·연락 끊김 세션을 소유자가 지운다.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { DashboardSnapshot, IngestBatch } from '@c-monitor/shared';
+import { runCleanup } from '../src/jobs/cleanup';
 import { ADMIN, MIN, makeHarness, makeTestDb, type TestDb } from './helpers';
 
 let db: TestDb;
@@ -129,5 +130,77 @@ describe('세션 삭제 (DELETE /api/sessions/:id)', () => {
     expect(row!.started_at.toISOString()).toBe(startedAt); // 예전 세션의 흔적이 아니라 새로 시작한 것
     expect(await lineCount('back')).toBe(1); // 지운 대화는 돌아오지 않는다
     expect(await listed()).toContain(sid('back'));
+  });
+
+  const tombstone = async (name: string) => (await db.sql`SELECT 1 FROM deleted_sessions WHERE session_id = ${sid(name)}`).length === 1;
+
+  it('다시 만들어지면 지운 표시가 사라져, 그 뒤의 종료 알림은 평소처럼 반영된다', async () => {
+    expect(await tombstone('back')).toBe(false);
+    h.advance(MIN);
+    await h.ingest(a.token, h.batch([h.ev('back', 'SessionEnd', { reason: 'exit' })]));
+    const [row] = await db.sql<{ status: string }[]>`SELECT status FROM sessions WHERE id = ${sid('back')}`;
+    expect(row!.status).toBe('end');
+  });
+
+  it('지우기 전에 생긴 이벤트가 늦게 도착해도(처음 보는 id) 되살아나지 않는다', async () => {
+    await endedSession('late');
+    const late = h.batch([h.ev('late', 'PreToolUse', { tool_name: 'Bash', tool_input: { command: 'ls' } })], {
+      transcript: [{ sessionId: 'late', seq: 2, lines: [h.line('늦게 온 줄')] }],
+    });
+    h.advance(MIN);
+    expect((await del('late', a.cookie)).status).toBe(200);
+    h.advance(MIN);
+    h.published.length = 0;
+
+    const res = await h.ingest(a.token, late);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ accepted: 0 });
+    expect(await exists('late')).toBe(false);
+    expect(await lineCount('late')).toBe(0);
+    expect(await tombstone('late')).toBe(true);
+    expect(h.published.filter((p) => p.msg.type === 'session' || p.msg.type === 'log')).toEqual([]);
+  });
+
+  it('지운 뒤 종료 알림(SessionEnd)만 오면 카드를 다시 만들지 않는다', async () => {
+    await h.ingest(a.token, h.batch([h.ev('quiet', 'UserPromptSubmit', { prompt: 'x' })]));
+    await db.sql`UPDATE sessions SET status = 'lost' WHERE id = ${sid('quiet')}`;
+    expect((await del('quiet', a.cookie)).status).toBe(200);
+    h.advance(5 * MIN);
+    h.published.length = 0;
+
+    const res = await h.ingest(a.token, h.batch([h.ev('quiet', 'SessionEnd', { reason: 'exit' })], {
+      transcript: [{ sessionId: 'quiet', seq: 0, lines: [h.line('마지막 줄')] }],
+    }));
+    expect(await res.json()).toEqual({ accepted: 0 });
+    expect(await exists('quiet')).toBe(false);
+    expect(await lineCount('quiet')).toBe(0);
+    expect(h.published.filter((p) => p.msg.type === 'session' || p.msg.type === 'log')).toEqual([]);
+  });
+
+  it('한 묶음에 지우기 전·후 이벤트가 섞여 있으면 뒤의 것만 반영해 되살린다', async () => {
+    await h.ingest(a.token, h.batch([h.ev('mixed', 'UserPromptSubmit', { prompt: '옛 질문' })]));
+    await db.sql`UPDATE sessions SET status = 'lost' WHERE id = ${sid('mixed')}`;
+    const before = h.ev('mixed', 'PreToolUse', { tool_name: 'Bash', tool_input: { command: '옛 명령' } });
+    h.advance(MIN);
+    expect((await del('mixed', a.cookie)).status).toBe(200);
+    h.advance(MIN);
+    const after = h.ev('mixed', 'Stop', { last_assistant_message: '끝났습니다' });
+    const startedAt = h.clock.now.toISOString();
+
+    const res = await h.ingest(a.token, h.batch([before, after]));
+    expect(await res.json()).toEqual({ accepted: 1 });
+    const [row] = await db.sql<{ status: string; started_at: Date; activity_text: string }[]>`
+      SELECT status, started_at, activity_text FROM sessions WHERE id = ${sid('mixed')}`;
+    expect(row).toMatchObject({ status: 'done', activity_text: '끝났습니다' });
+    expect(row!.started_at.toISOString()).toBe(startedAt);
+    expect(await tombstone('mixed')).toBe(false);
+  });
+
+  it('지운 표시는 30일 뒤 정리된다', async () => {
+    expect(await tombstone('late')).toBe(true);
+    h.advance(31 * 24 * 60 * MIN);
+    const result = await runCleanup(h.deps);
+    expect(result.deletedSessions).toBeGreaterThanOrEqual(1);
+    expect(await tombstone('late')).toBe(false);
   });
 });

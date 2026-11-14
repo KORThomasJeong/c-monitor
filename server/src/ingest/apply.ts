@@ -108,18 +108,33 @@ export async function applyBatch(deps: Deps, machine: Machine, batch: IngestBatc
         ON CONFLICT DO NOTHING RETURNING id`;
       for (const r of rows) fresh.add(r.id);
     }
-    const events = batch.events.filter((e) => fresh.delete(e.id));
-    // 이미 받은 이벤트가 섞여 있는 세션 = 예전에 받은 묶음을 다시 보낸 것.
-    const accepted = new Set(events);
-    const resent = new Set(batch.events.filter((e) => !accepted.has(e)).map((e) => sid(e.sessionId)));
+    const received = batch.events.filter((e) => fresh.delete(e.id));
 
-    // 이 묶음이 건드리는 세션들의 현재 상태.
-    const touched = [...new Set([...events.map((e) => sid(e.sessionId)), ...batch.transcript.map((t) => sid(t.sessionId))])];
+    // 이 묶음이 건드리는 세션들의 현재 상태와, 사용자가 지운 세션의 표시.
+    const touched = [...new Set([...received.map((e) => sid(e.sessionId)), ...batch.transcript.map((t) => sid(t.sessionId))])];
     const states = new Map<string, SessionState>();
+    const deletedAt = new Map<string, number>();
     if (touched.length > 0) {
       const rows = await tx<SessionRow[]>`SELECT * FROM sessions WHERE id IN ${tx(touched)}`;
       for (const r of rows) states.set(r.id, fromRow(r));
+      const gone = await tx<{ session_id: string; deleted_at: Date }[]>`
+        SELECT session_id, deleted_at FROM deleted_sessions WHERE session_id IN ${tx(touched)}`;
+      for (const r of gone) deletedAt.set(r.session_id, r.deleted_at.getTime());
     }
+
+    // 지운 세션은 지운 뒤에 생긴 "움직임"이 있을 때만 되살린다.
+    // 지우기 전 시각의 이벤트(큐에 남아 있다 늦게 온 것)와 종료 알림(SessionEnd)만으로는 카드를 다시 만들지 않는다.
+    const afterDelete = (e: HookEvent, id: string) => new Date(e.at).getTime() > deletedAt.get(id)!;
+    const revived = new Set<string>();
+    for (const e of received) {
+      const id = sid(e.sessionId);
+      if (deletedAt.has(id) && e.event !== 'SessionEnd' && afterDelete(e, id)) revived.add(id);
+    }
+    const events = received.filter((e) => {
+      const id = sid(e.sessionId);
+      return !deletedAt.has(id) || (revived.has(id) && afterDelete(e, id));
+    });
+    if (revived.size > 0) await tx`DELETE FROM deleted_sessions WHERE session_id IN ${tx([...revived])}`;
 
     const dirty = new Set<string>();
     for (const e of events) {
@@ -128,12 +143,12 @@ export async function applyBatch(deps: Deps, machine: Machine, batch: IngestBatc
       dirty.add(id);
     }
     // 이벤트 없이 대화만 먼저 온 세션은 최소한의 행을 만들어 둔다.
-    // 다만 다시 보낸 묶음인데 세션이 없다면 사용자가 그 세션을 지운 것이다 — 대화만으로 되살리지 않는다.
+    // 다만 지운 세션(되살아나지 않은 것)의 대화는 받지 않는다.
     const dropped = new Set<string>();
     for (const t of batch.transcript) {
       const id = sid(t.sessionId);
       if (states.has(id)) continue;
-      if (resent.has(id)) {
+      if (deletedAt.has(id)) {
         dropped.add(id);
         continue;
       }

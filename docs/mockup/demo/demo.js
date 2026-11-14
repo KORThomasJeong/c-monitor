@@ -23,6 +23,34 @@
 
   // ── 시작 설정 ───────────────────────────────────────────
   var BASE = new URL('.', location.href).href;
+  // 검색 결과 한 줄. 실제 서버(server/src/query/search.ts 의 searchLog + makeSnippet)와 같은 규칙:
+  // 찾은 자리 80자 앞부터 400자를 떼어 낸 뒤, 공백을 하나로 줄이고 찾은 글자 40자 앞부터 최대 160자(… 포함).
+  function searchSnippet(text, needle) {
+    var all = Array.from(text);
+    var at = text.toLowerCase().indexOf(needle);
+    var pos = at < 0 ? 0 : Array.from(text.slice(0, at)).length + 1; // SQL strpos처럼 1부터, 없으면 0
+    var from = Math.max(pos - 80, 1);
+    var cutStart = from > 1;
+    var cutEnd = from + 400 - 1 < all.length;
+    var norm = all.slice(from - 1, from - 1 + 400).join('').replace(/\s+/g, ' ').trim();
+    var chars = Array.from(norm);
+    var len = chars.length;
+    var found = norm.toLowerCase().indexOf(needle.replace(/\s+/g, ' ').trim());
+    var match = found < 0 ? 0 : Array.from(norm.slice(0, found)).length;
+    var size = function (a, b) { return b - a + (cutStart || a > 0 ? 1 : 0) + (cutEnd || b < len ? 1 : 0); };
+    var start = Math.max(0, match - 40);
+    var end = len;
+    if (size(0, len) <= 160) {
+      start = 0;
+    } else if (size(start, len) <= 160) {
+      while (start > 0 && size(start - 1, len) <= 160) start -= 1;
+    } else {
+      end = start;
+      while (end < len && size(start, end + 1) <= 160) end += 1;
+    }
+    return (cutStart || start > 0 ? '…' : '') + chars.slice(start, end).join('').trim() + (cutEnd || end < len ? '…' : '');
+  }
+
   var params = new URLSearchParams(location.search);
   var THEME_KEY = 'cs-theme';
   var MODE_KEY = 'cs-mode';
@@ -79,10 +107,10 @@
   var loggedIn = startPath !== '/login';
 
   var machines = [
-    { id: 'm-home', name: '집 PC', os: 'Windows 11', pluginVersion: '0.1.0', lastSeenAt: ago(0), online: true, remoteReply: false },
-    { id: 'm-srv', name: 'server-a', os: 'Ubuntu 24.04', pluginVersion: '0.1.0', lastSeenAt: ago(0.5), online: true, remoteReply: false },
-    { id: 'm-build', name: 'build-vm', os: 'Ubuntu 22.04', pluginVersion: '0.1.0', lastSeenAt: ago(1), online: true, remoteReply: false },
-    { id: 'm-cloud', name: 'cloud-box', os: 'Debian 12', pluginVersion: '0.1.0', lastSeenAt: ago(38), online: false, remoteReply: false },
+    { id: 'm-home', name: '집 PC', os: 'Windows 11', pluginVersion: '0.1.3', lastSeenAt: ago(0), online: true, remoteReply: false },
+    { id: 'm-srv', name: 'server-a', os: 'Ubuntu 24.04', pluginVersion: '0.1.3', lastSeenAt: ago(0.5), online: true, remoteReply: false },
+    { id: 'm-build', name: 'build-vm', os: 'Ubuntu 22.04', pluginVersion: '0.1.3', lastSeenAt: ago(1), online: true, remoteReply: false },
+    { id: 'm-cloud', name: 'cloud-box', os: 'Debian 12', pluginVersion: '0.1.3', lastSeenAt: ago(38), online: false, remoteReply: false },
   ];
 
   function history7(values) {
@@ -584,9 +612,7 @@
       return J(200, {
         total: hits.length,
         hits: hits.slice(0, max).map(function (l) {
-          var flat = (l.text || '').replace(/\s+/g, ' ');
-          var i = Math.max(0, flat.toLowerCase().indexOf(needle) - 60);
-          var hit = { seq: l.seq, role: l.role, at: l.at, snippet: flat.slice(i, i + 160) };
+          var hit = { seq: l.seq, role: l.role, at: l.at, snippet: searchSnippet(l.text || '', needle) };
           if (l.toolName) hit.toolName = l.toolName;
           return hit;
         }),
@@ -682,7 +708,7 @@
       var c = normalizeUserCode(body && body.userCode);
       if (!c || usedCodes[c]) return notFound();
       usedCodes[c] = true;
-      var nm = { id: 'm-new-' + c.replace('-', '').toLowerCase(), name: '노트북', os: 'macOS 15', pluginVersion: '0.1.0', lastSeenAt: nowIso(), online: true, remoteReply: false };
+      var nm = { id: 'm-new-' + c.replace('-', '').toLowerCase(), name: '노트북', os: 'macOS 15', pluginVersion: '0.1.3', lastSeenAt: nowIso(), online: true, remoteReply: false };
       machines.push(nm);
       publish({ type: 'machine', machine: clone(nm) });
       return J(200, { ok: true, machineName: nm.name });
