@@ -1,10 +1,12 @@
 // 세션에 답하기(승인·선택지·글). 웹(POST /api/sessions/:id/reply)과 텔레그램(버튼·답장)이 같은 처리를 쓴다.
+// 답이 들어가면 어디서 답했는지(source) 기록을 남긴다(3차 웹 답 기록).
 import { randomUUID } from 'node:crypto';
-import { REPLY_STALE_SECONDS, type ReplyAnswer, type ReplyRequest, type SessionStatus } from '@c-monitor/shared';
+import { REPLY_STALE_SECONDS, type ReplyAnswer, type ReplyRecord, type ReplyRequest, type SessionStatus } from '@c-monitor/shared';
 import { publishSessions } from '../query/views';
 import type { Deps } from '../types';
 import { tryDeliver } from './deliver';
 import { machineCanReply, statusCanReply } from './pending';
+import { recordReply } from './records';
 
 /**
  * ok              답을 넣었다(queued=true 면 글이 아직 전달 전)
@@ -19,6 +21,7 @@ export type SubmitResult =
 
 export async function submitReply(
   deps: Pick<Deps, 'sql' | 'bus' | 'now' | 'reply'>, userId: string, sessionId: string, body: ReplyRequest,
+  source: ReplyRecord['source'],
 ): Promise<SubmitResult> {
   const { sql } = deps;
   const [s] = await sql<{
@@ -36,6 +39,7 @@ export async function submitReply(
     await sql`
       INSERT INTO session_messages (id, session_id, machine_id, user_id, text, created_at)
       SELECT ${randomUUID()}, id, machine_id, user_id, ${body.text}, ${now} FROM sessions WHERE id = ${sessionId}`;
+    await recordReply(deps, userId, sessionId, source, body);
     // 세션이 done이고 대기자가 붙어 있으면 바로 넘어간다. 아니면 쌓아 둔다.
     const delivered = await tryDeliver(deps, sessionId);
     if (!delivered) await publishSessions(deps, [sessionId]);
@@ -82,5 +86,6 @@ export async function submitReply(
   deps.reply.notifyRequests([requestId]);
   await publishSessions(deps, [sessionId]);
   if (outcome === 'stale') return { ok: false, error: 'no_pending' };
+  await recordReply(deps, userId, sessionId, source, body);
   return { ok: true, queued: false };
 }

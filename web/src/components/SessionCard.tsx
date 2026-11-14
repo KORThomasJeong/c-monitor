@@ -3,7 +3,7 @@
 // 감싸는 요소(.card-wrap / .tile-wrap) 안에 카드 버튼과 지우기 버튼을 형제로 둔다.
 import type { SessionView } from '@c-monitor/shared';
 import { formatAgo, formatClock } from '../lib/format';
-import { canDelete, cardClass, elapsedText, shortTime, statusLabel, TAG_COLOR, tileClass, type AccountStyle } from '../lib/view';
+import { canDelete, cardClass, ctxText, elapsedText, shortTime, statusLabel, TAG_COLOR, tileClass, type AccountStyle } from '../lib/view';
 import type { ReplyCtl } from '../state/reply';
 import { AlertIcon, BellOffIcon, BranchIcon, CheckIcon, CloseIcon, PowerIcon, SendIcon, SpinIcon, WifiOffIcon } from './Icons';
 import { PendingReply } from './Reply';
@@ -28,7 +28,7 @@ type CardProps = {
   reply?: ReplyCtl;
 };
 
-/** 내 세션인데 텔레그램 알림을 꺼 두었는가(카드에 작은 표시) */
+/** 내 세션인데 알림(텔레그램·웹)을 꺼 두었는가(카드에 작은 표시) */
 export const telegramOff = (s: SessionView) => s.telegram === false && !s.sharedBy;
 
 /** 카드·타일에 답 버튼을 보일 수 있는가 */
@@ -48,13 +48,13 @@ export function SessionCard({ s, acct, selected, now, onOpen, onDelete, reply }:
         type="button"
         className={cardClass(s, selected)}
         onClick={() => onOpen(s.id)}
-        aria-label={`${s.name} · ${label}${tgOff ? ' · 텔레그램 알림 끔' : ''}`}
+        aria-label={`${s.name} · ${label}${tgOff ? ' · 알림 끔' : ''}`}
         aria-pressed={selected}
       >
         <span className="c-top">
           <span className={`tag ${TAG_COLOR[s.status]}`}><span className="dot" />{label}</span>
           <span className="c-right">
-            {tgOff && <span className="c-tgoff" title="텔레그램 알림 끔" data-testid="tg-off"><BellOffIcon size={14} /></span>}
+            {tgOff && <span className="c-tgoff" title="알림 끔" data-testid="tg-off"><BellOffIcon size={14} /></span>}
             <span className="c-time">{elapsedText(s, now)}</span>
           </span>
         </span>
@@ -63,6 +63,8 @@ export function SessionCard({ s, acct, selected, now, onOpen, onDelete, reply }:
           <span className={acct.chip}>{acct.label}</span>
           {s.branch && <span className="c-mi"><BranchIcon size={12} />{s.branch}</span>}
           {s.model && <span className="c-mi">{s.model}</span>}
+          {s.contextPct != null && <span className="c-mi c-ctx" title="컨텍스트 사용률">컨텍스트 {ctxText(s.contextPct)}</span>}
+          {s.sharedBy && <span className="c-mi c-shared" title={`${s.sharedBy}님이 공유한 세션`}>{s.sharedBy} 공유</span>}
         </span>
         {!answer && (
           <span className="c-act">

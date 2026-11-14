@@ -512,6 +512,11 @@ describe('기다림 알림·버튼', () => {
     expect(edit.message_id).toBe(m!.message_id);
     expect(edit.text).toContain('✓ 허용함');
     expect(edit.reply_markup?.inline_keyboard).toEqual([]);
+    // 웹 답 기록: 텔레그램에서 답했다고 남는다
+    const rec = (await (await h.req('GET', `/api/sessions/${encodeURIComponent(sid('w2'))}/replies`, { cookie: a.cookie })).json()) as {
+      replies: { source: string; kind: string; label: string }[];
+    };
+    expect(rec.replies.map((r) => [r.source, r.kind, r.label])).toEqual([['telegram', 'permission', '허용']]);
   });
 
   it('이 세션 동안 허용·거부도 같은 처리, 이미 끝난 요청이면 "이미 터미널에서 답했습니다"', async () => {
@@ -646,6 +651,10 @@ describe('답장 글', () => {
     // 대기자가 붙으면 그 글이 넘어간다
     const res = await h.req('POST', '/api/reply/inbox', { token: a.token, body: { sessionId: 't1', waiterId: randomUUID() } });
     expect(await res.json()).toMatchObject({ status: 'message', text: '이제 문서도 고쳐 줘' });
+    const rec = (await (await h.req('GET', `/api/sessions/${encodeURIComponent(sid('t1'))}/replies`, { cookie: a.cookie })).json()) as {
+      replies: { source: string; kind: string; label: string }[];
+    };
+    expect(rec.replies.map((r) => [r.source, r.kind, r.label])).toEqual([['telegram', 'message', '이제 문서도 고쳐 줘']]);
   });
 
   it('승인 대기 중이면 거부+글, 질문 대기 중이면 첫 질문의 답', async () => {
@@ -796,10 +805,14 @@ describe('가입 신청 알림', () => {
     tg.clear();
   });
 
-  it('새 가입 신청은 텔레그램을 연결한 관리자에게만', async () => {
+  it('새 가입 신청은 가입 고지에 동의할 때 텔레그램을 연결한 관리자에게만', async () => {
     await link(adminCookie, ADMIN_CHAT);
     tg.clear();
-    await h.login('newbie@example.com');
+    const newbie = await h.login('newbie@example.com');
+    await settle();
+    // 동의 전에는 알리지 않는다
+    expect(tg.take(ADMIN_CHAT)).toEqual([]);
+    expect((await h.req('POST', '/api/me/consent', { cookie: newbie })).status).toBe(200);
     await settle();
     const [m, ...rest] = tg.take(ADMIN_CHAT);
     expect(rest).toEqual([]);
@@ -807,8 +820,9 @@ describe('가입 신청 알림', () => {
     expect(m!.text).toContain('newbie@example.com');
     expect(m!.text).toContain('https://cs.test/admin');
     expect(tg.take(A_CHAT)).toEqual([]);
-    // 이미 있는 사용자가 다시 로그인하면 보내지 않는다
-    await h.login('newbie@example.com');
+    // 다시 로그인하거나 다시 동의해도 보내지 않는다
+    const again = await h.login('newbie@example.com');
+    expect((await h.req('POST', '/api/me/consent', { cookie: again })).status).toBe(200);
     await settle();
     expect(tg.take(ADMIN_CHAT)).toEqual([]);
   });

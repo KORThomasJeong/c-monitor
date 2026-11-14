@@ -20,6 +20,10 @@ vi.mock('../api/client', async (orig) => ({
   putAdminTelegram: vi.fn(),
   deleteAdminTelegram: vi.fn(),
   getAdminUsers: vi.fn(async () => []),
+  getPushSubscriptions: vi.fn(async () => []),
+  getMyStorage: vi.fn(async () => ({ bytes: 0, quotaMb: 1024, trimmedAt: null })),
+  getAdminMachines: vi.fn(async () => []),
+  getAdminStorage: vi.fn(async () => ({ totalBytes: 0, chatBytes: 0, usageBytes: 0, otherBytes: 0, diskFreeBytes: null, users: [] })),
   getDashboard: vi.fn(async () => ({ sessions: [], machines: [], accounts: [] })),
   getSettings: vi.fn(async () => ({ lostMinutes: 10, endHours: 24, keepChatDays: 30, keepUsageDays: 90 })),
 }));
@@ -32,7 +36,7 @@ const nv = (tg: Partial<NotifyView['telegram']> = {}, s: Partial<NotifyView['set
 const linkedView = (s: Partial<NotifyView['settings']> = {}) =>
   nv({ linked: true, linkedName: '@hong', linkedAt: new Date().toISOString() }, s);
 const meOf = (role: 'admin' | 'user' = 'user'): MeResponse => ({
-  user: { id: 'u1', email: 'someone@example.com', name: null, role, status: 'active' },
+  user: { id: 'u1', email: 'someone@example.com', name: null, role, status: 'active', consentedAt: '2026-11-01T00:00:00Z', deleteAt: null },
 });
 const region = () => screen.findByRole('region', { name: '알림' });
 
@@ -55,14 +59,17 @@ afterEach(() => {
 });
 
 describe('설정 › 알림 · 봇 없음', () => {
-  it('일반 사용자에게는 관리자에게 요청하라는 문구만 보인다', async () => {
+  it('일반 사용자에게는 텔레그램 자리에 관리자에게 요청하라는 문구만 보인다(웹 알림은 따로 쓸 수 있다)', async () => {
     vi.mocked(api.getNotify).mockResolvedValue(nv({ available: false, botUsername: null }));
     render(<NotifySection />);
     const sec = await region();
-    expect(await within(sec).findByText(/서버에 텔레그램 봇이 설정되지 않았습니다\./)).toBeInTheDocument();
-    expect(within(sec).getByText(/관리자에게 텔레그램 봇 설정을 요청하세요\./)).toBeInTheDocument();
-    expect(within(sec).queryByRole('switch')).not.toBeInTheDocument();
-    expect(within(sec).queryByRole('button')).not.toBeInTheDocument();
+    const tg = within(sec).getByRole('group', { name: '텔레그램' });
+    expect(await within(tg).findByText(/서버에 텔레그램 봇이 설정되지 않았습니다\./)).toBeInTheDocument();
+    expect(within(tg).getByText(/관리자에게 텔레그램 봇 설정을 요청하세요\./)).toBeInTheDocument();
+    expect(within(tg).queryByRole('switch')).not.toBeInTheDocument();
+    expect(within(tg).queryByRole('button')).not.toBeInTheDocument();
+    // 텔레그램도 웹 알림도 없으니 항목 스위치는 막혀 있다.
+    expect(await within(sec).findByRole('switch', { name: '답을 기다릴 때' })).toBeDisabled();
   });
 
   it('관리자에게는 관리 › 알림 링크를 보인다', async () => {
@@ -210,7 +217,7 @@ describe('설정 › 알림 · 항목 스위치', () => {
     render(<NotifySection />);
     const sw = await screen.findByRole('switch', { name: '작업이 끝났을 때' });
     expect(sw).toBeDisabled();
-    expect(sw).toHaveAccessibleDescription(/텔레그램을 연결하면 알림 항목을 고를 수 있습니다\./);
+    expect(sw).toHaveAccessibleDescription(/텔레그램을 연결하거나 웹 알림을 켜면 알림 항목을 고를 수 있습니다\./);
     expect(screen.getByRole('switch', { name: '한도가 80%를 넘을 때' })).toBeDisabled();
     expect(screen.getByLabelText('한도 알림 기준(50~100%)')).toBeDisabled();
     expect(screen.getByText('승인·질문 알림에서는 버튼으로 바로 답할 수 있고, 알림에 답장으로 글을 쓰면 그 세션에 전달됩니다.')).toBeInTheDocument();

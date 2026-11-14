@@ -241,3 +241,72 @@ CREATE TABLE IF NOT EXISTS limit_alerts (
   PRIMARY KEY (user_id, account, win, resets_at)
 );
 CREATE INDEX IF NOT EXISTS limit_alerts_created_idx ON limit_alerts (created_at);
+
+-- ══ 3차 ═══════════════════════════════════════════════════════
+-- ── 계정: 동의·탈퇴·미리 추가·용량 ─────────────────────────────
+-- consented_at: 가입 고지에 동의한 시각(null이면 웹이 동의 화면을 먼저 보여 준다)
+-- delete_at:    탈퇴 신청 뒤 완전 삭제 예정 시각(null이면 탈퇴하지 않음). 값이 있으면 거의 모든 API가 403 withdrawn
+-- invited:      관리자가 미리 추가했고 아직 한 번도 로그인하지 않음
+-- quota_mb:     저장 용량 한도(MB, 0 = 무제한). trimmed_at: 한도 때문에 마지막으로 대화를 지운 시각
+ALTER TABLE users ADD COLUMN IF NOT EXISTS consented_at  timestamptz;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS delete_at     timestamptz;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS invited       boolean NOT NULL DEFAULT false;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at timestamptz;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS quota_mb      integer NOT NULL DEFAULT 1024;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS trimmed_at    timestamptz;
+CREATE INDEX IF NOT EXISTS users_delete_idx ON users (delete_at) WHERE delete_at IS NOT NULL;
+
+-- ── 컨텍스트 %·비용(상태줄이 보낸 마지막 값) ──────────────────
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS context_pct double precision;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS cost_usd    double precision;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS stats_at    timestamptz;
+
+-- ── 공유 ──────────────────────────────────────────────────────
+-- 링크 공유: token에는 토큰 원문의 sha256만 둔다(원문은 만들 때 한 번만 내려준다). target_user_id는 null.
+-- 사람 지정: target_user_id = 받은 사람, token은 null. 같은 세션·같은 사람은 하나만.
+CREATE UNIQUE INDEX IF NOT EXISTS shares_session_target_idx ON shares (session_id, target_user_id) WHERE target_user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS shares_session_idx ON shares (session_id);
+
+-- ── 웹 답 기록 ────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS reply_records (
+  id          text PRIMARY KEY,
+  session_id  text NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  user_id     text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  at          timestamptz NOT NULL,
+  source      text NOT NULL CHECK (source IN ('web', 'telegram')),
+  kind        text NOT NULL CHECK (kind IN ('permission', 'answer', 'message')),
+  label       text NOT NULL
+);
+CREATE INDEX IF NOT EXISTS reply_records_session_idx ON reply_records (session_id, at);
+CREATE INDEX IF NOT EXISTS reply_records_at_idx ON reply_records (at);
+
+-- ── 글 전달 수신 확인(0.3.0 이상 플러그인) ─────────────────────
+-- handed_at: 대기자에게 넘긴 시각. ack가 오면 delivered_at을 찍고 본문을 비운다. ack 없이 60초가 지나면 다시 넘긴다.
+ALTER TABLE session_messages ADD COLUMN IF NOT EXISTS handed_at timestamptz;
+
+-- ── 웹 푸시 ───────────────────────────────────────────────────
+-- VAPID 키(행은 하나, id = 1). private_key_enc는 AES-256-GCM 암호문(notify/secret.ts).
+CREATE TABLE IF NOT EXISTS push_keys (
+  id               integer PRIMARY KEY CHECK (id = 1),
+  public_key       text NOT NULL,
+  private_key_enc  text NOT NULL,
+  created_at       timestamptz NOT NULL
+);
+-- 브라우저 구독. 같은 endpoint는 하나(다른 사용자가 같은 브라우저로 구독하면 그 사용자 것으로 바뀐다).
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  endpoint    text PRIMARY KEY,
+  user_id     text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  p256dh      text NOT NULL,
+  auth        text NOT NULL,
+  label       text,
+  created_at  timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS push_subscriptions_user_idx ON push_subscriptions (user_id);
+-- 한 번만 보내야 하는 웹 푸시 기록(승인·질문 요청, 한도 창). key 예: 'req:<요청 id>', 'limit:<계정>:five:<초기화>'.
+CREATE TABLE IF NOT EXISTS push_sent (
+  user_id     text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  key         text NOT NULL,
+  created_at  timestamptz NOT NULL,
+  PRIMARY KEY (user_id, key)
+);
+CREATE INDEX IF NOT EXISTS push_sent_created_idx ON push_sent (created_at);

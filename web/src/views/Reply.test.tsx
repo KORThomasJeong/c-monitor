@@ -18,7 +18,7 @@ vi.mock('../api/client', async (orig) => ({
   replyToSession: vi.fn(),
 }));
 
-const me: MeResponse = { user: { id: 'u1', email: 'admin@example.com', name: null, role: 'admin', status: 'active' } };
+const me: MeResponse = { user: { id: 'u1', email: 'admin@example.com', name: null, role: 'admin', status: 'active', consentedAt: '2026-11-01T00:00:00Z', deleteAt: null } };
 let handlers: StreamHandlers;
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
 

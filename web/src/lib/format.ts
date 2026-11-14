@@ -73,3 +73,28 @@ export function normalizeUserCode(raw: string): string {
   const s = raw.toUpperCase().replace(/[^A-Z0-9]/g, '');
   return s.length === 8 ? `${s.slice(0, 4)}-${s.slice(4)}` : s;
 }
+
+/** 바이트를 "418MB", "1.2GB", "12KB" 꼴로. */
+export function formatBytes(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n) || n < 0) return '—';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let v = n;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  const s = i === 0 || v >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10);
+  return `${s}${units[i]}`;
+}
+
+/** 용량 한도(MB). 0이면 "무제한". */
+export const formatQuota = (mb: number) => (mb <= 0 ? '무제한' : formatBytes(mb * 1024 * 1024));
+
+/** 비용(USD) "$3.12". */
+export const formatUsd = (v: number) => `$${v.toFixed(2)}`;
+
+/** 날짜와 시각 "2026년 11월 21일 09:02". */
+export function formatDateTime(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}

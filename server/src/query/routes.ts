@@ -1,4 +1,5 @@
-// 조회 API: 대시보드 목록, 대화 로그(페이지 단위)·검색, 봤음 표시, 세션 삭제, 계정 별칭, 기기 폐기, 설정.
+// 조회 API: 대시보드 목록, 대화 로그(페이지 단위)·검색·답 기록, 봤음 표시, 세션 삭제, 계정 별칭, 기기 폐기, 설정.
+// 읽기(대화·검색·답 기록)는 소유자·관리자·사람 지정 공유를 받은 사람이, 쓰기는 소유자 본인만 할 수 있다(남의 것은 404).
 import { Hono } from 'hono';
 import { z } from 'zod';
 import {
@@ -7,10 +8,11 @@ import {
 } from '@c-monitor/shared';
 import { requireUser, userGuard } from '../auth/guard';
 import { revokeMachine } from '../device/revoke';
+import { loadReplies } from '../reply/records';
 import type { Deps, Env, User } from '../types';
 import { fail, readBody } from '../util';
 import { searchLog } from './search';
-import { loadAccountViews, loadLogPage, loadSessionViews, loadSettings, loadSnapshot, type LogCursor } from './views';
+import { loadAccountViews, loadLogPage, loadSessionViews, loadSettings, loadSnapshot, sessionAccess, type LogCursor } from './views';
 
 /** 검색 결과 최대 개수와 검색어 최대 길이(글자 수). */
 const SEARCH_LIMIT_MAX = 200;
@@ -19,7 +21,7 @@ const SEARCH_MAX_CHARS = 200;
 const SEQ_MAX = 2_147_483_647;
 
 /** ?limit= 을 읽는다. 없으면 기본값, 숫자가 아니거나 1~max를 벗어나면 400. */
-function readLimit(raw: string | undefined, fallback: number, max: number): number {
+export function readLimit(raw: string | undefined, fallback: number, max: number): number {
   if (raw === undefined) return fallback;
   const n = /^\d{1,9}$/.test(raw) ? Number(raw) : NaN;
   if (!(n >= 1 && n <= max)) throw fail(400, 'invalid_limit');
@@ -27,7 +29,7 @@ function readLimit(raw: string | undefined, fallback: number, max: number): numb
 }
 
 /** ?before= / ?after= / ?around= 중 하나를 읽는다. 둘 이상이거나 정수가 아니면 400. */
-function readCursor(query: Record<string, string>): LogCursor {
+export function readCursor(query: Record<string, string>): LogCursor {
   const given = (['before', 'after', 'around'] as const).filter((k) => query[k] !== undefined);
   if (given.length === 0) return null;
   const key = given[0]!;
@@ -45,8 +47,9 @@ const AccountPatchSchema = z.object({
 const SettingsSchema = z.object({
   lostMinutes: z.number().int().min(1).max(1440),
   endHours: z.number().int().min(0).max(8760),
-  keepChatDays: z.number().int().min(1).max(3650),
-  keepUsageDays: z.number().int().min(1).max(3650),
+  /** 0 = 지우지 않음 */
+  keepChatDays: z.number().int().min(0).max(3650),
+  keepUsageDays: z.number().int().min(0).max(3650),
 }).partial().strict();
 
 export function queryRoutes(deps: Deps): Hono<Env> {
@@ -54,12 +57,13 @@ export function queryRoutes(deps: Deps): Hono<Env> {
   const app = new Hono<Env>();
   const active = userGuard(deps, 'active');
 
-  /** 세션 소유자를 확인한다. 남의 것이면(관리자 열람 제외) 없는 것처럼 404. */
-  async function ownerOf(sessionId: string, user: User, allowAdmin: boolean): Promise<string> {
-    const [row] = await sql<{ user_id: string }[]>`SELECT user_id FROM sessions WHERE id = ${sessionId}`;
-    if (!row) throw fail(404, 'not_found');
-    if (row.user_id !== user.id && !(allowAdmin && user.role === 'admin')) throw fail(404, 'not_found');
-    return row.user_id;
+  /** 볼 수 있는 세션인가(소유자·관리자 열람·사람 지정 공유). 아니면 없는 것처럼 404. */
+  async function canRead(sessionId: string, user: User): Promise<void> {
+    if (!(await sessionAccess(sql, sessionId, user, deps.now()))) throw fail(404, 'not_found');
+  }
+  /** 소유자 본인의 세션인가. 남의 것이면(관리자·공유받은 사람도) 없는 것처럼 404. */
+  async function mustOwn(sessionId: string, user: User): Promise<void> {
+    if ((await sessionAccess(sql, sessionId, user, deps.now())) !== 'owner') throw fail(404, 'not_found');
   }
 
   app.get('/api/sessions', active, async (c) => {
@@ -72,7 +76,7 @@ export function queryRoutes(deps: Deps): Hono<Env> {
 
   app.get('/api/sessions/:id/log', active, async (c) => {
     const id = c.req.param('id');
-    await ownerOf(id, requireUser(c), true);
+    await canRead(id, requireUser(c));
     const cursor = readCursor(c.req.query());
     const limit = readLimit(c.req.query('limit'), LOG_PAGE_SIZE, LOG_PAGE_MAX);
     return c.json(await loadLogPage(sql, id, cursor, limit));
@@ -80,7 +84,7 @@ export function queryRoutes(deps: Deps): Hono<Env> {
 
   app.get('/api/sessions/:id/search', active, async (c) => {
     const id = c.req.param('id');
-    await ownerOf(id, requireUser(c), true);
+    await canRead(id, requireUser(c));
     const q = (c.req.query('q') ?? '').trim();
     const chars = Array.from(q).length;
     if (chars < SEARCH_MIN_CHARS || chars > SEARCH_MAX_CHARS) throw fail(400, 'invalid_query');
@@ -88,10 +92,17 @@ export function queryRoutes(deps: Deps): Hono<Env> {
     return c.json(await searchLog(sql, id, q, limit));
   });
 
+  // 웹·텔레그램에서 답한 기록(오래된 순, 최근 200개).
+  app.get('/api/sessions/:id/replies', active, async (c) => {
+    const id = c.req.param('id');
+    await canRead(id, requireUser(c));
+    return c.json({ replies: await loadReplies(sql, id) });
+  });
+
   app.post('/api/sessions/:id/seen', active, async (c) => {
     const id = c.req.param('id');
     const user = requireUser(c);
-    await ownerOf(id, user, false);
+    await mustOwn(id, user);
     const changed = await sql`UPDATE sessions SET seen = true WHERE id = ${id} AND seen = false RETURNING id`;
     const [view] = await loadSessionViews(sql, [id]);
     if (changed.length > 0 && view) deps.bus.publish(user.id, { type: 'session', session: view.session });

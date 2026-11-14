@@ -1,4 +1,5 @@
 // 기기 폐기. 웹(DELETE /api/machines/:id)과 터미널(POST /api/device/disconnect)이 같은 처리를 쓴다.
+import { republishSnapshots } from '../account/users';
 import { loadSnapshot } from '../query/views';
 import type { Deps } from '../types';
 
@@ -18,5 +19,10 @@ export async function revokeMachine(deps: Deps, userId: string, machineId: strin
   deps.reply.notifyRequests(requests.map((r) => r.id));
   deps.reply.dropInbox({ machineId });
   deps.bus.publish(userId, { type: 'snapshot', ...(await loadSnapshot(deps.sql, userId, now)) });
+  // 그 컴퓨터의 세션을 사람 지정으로 공유받은 사람의 대시보드에서도 빠진다.
+  const recipients = await deps.sql<{ id: string }[]>`
+    SELECT DISTINCT sh.target_user_id AS id FROM shares sh JOIN sessions s ON s.id = sh.session_id
+    WHERE s.machine_id = ${machineId} AND sh.target_user_id IS NOT NULL`;
+  await republishSnapshots(deps, recipients.map((r) => r.id));
   return true;
 }

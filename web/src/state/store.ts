@@ -4,9 +4,11 @@ import type {
   LogLine,
   LogResponse,
   MachineView,
+  ReplyRecord,
   SessionView,
   StreamMessage,
 } from '@c-monitor/shared';
+import { API } from '@c-monitor/shared';
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import * as api from '../api/client';
 import { connectStream } from '../api/stream';
@@ -33,11 +35,30 @@ export type DashboardState = {
   accounts: AccountView[];
   /** 세션별로 불러 둔 대화. 상세를 연 세션만 있다. */
   logs: Record<string, LogWindow>;
+  /** 세션별 웹·텔레그램 답 기록(오래된 순). 상세를 연 세션과 스트림으로 받은 세션만 있다. */
+  replies: Record<string, ReplyRecord[]>;
+  /** 기록 탭 목록(종료된 세션까지). 아직 안 불렀으면 null. */
+  history: SessionView[] | null;
+  /** 기록 탭의 컴퓨터(연결 해제한 컴퓨터 포함) */
+  historyMachines: MachineView[];
   /** 첫 snapshot을 받았는지 */
   loaded: boolean;
 };
 
-export const emptyState: DashboardState = { sessions: [], machines: [], accounts: [], logs: {}, loaded: false };
+export const emptyState: DashboardState = {
+  sessions: [], machines: [], accounts: [], logs: {}, replies: {}, history: null, historyMachines: [], loaded: false,
+};
+
+/** 대시보드 목록이나 기록 탭 목록에 있는 세션인가(대화를 받아 둘 곳이 있는가) */
+const known = (s: DashboardState, id: string) => s.sessions.some((x) => x.id === id) || !!s.history?.some((x) => x.id === id);
+
+/** 답 기록을 id 기준으로 합치고 시각 순으로 둔다. */
+export function mergeReplies(prev: ReplyRecord[] | undefined, incoming: ReplyRecord[]): ReplyRecord[] {
+  const byId = new Map<string, ReplyRecord>();
+  for (const r of prev ?? []) byId.set(r.id, r);
+  for (const r of incoming) byId.set(r.id, r);
+  return [...byId.values()].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+}
 
 const emptyWindow: LogWindow = { lines: [], total: null, hasMoreBefore: false, hasMoreAfter: false, fresh: 0, loading: false };
 
@@ -73,10 +94,15 @@ export function applyMessage(state: DashboardState, msg: StreamMessage): Dashboa
     case 'snapshot': {
       // 통째로 바꾼다. 대화는 스냅샷에 없으니 아직 있는 세션 것만 남긴다(빠진 줄은 다시 불러 채움).
       const alive = new Set(msg.sessions.map((s) => s.id));
+      for (const s of state.history ?? []) alive.add(s.id);
       const logs: Record<string, LogWindow> = {};
       for (const [id, win] of Object.entries(state.logs)) if (alive.has(id)) logs[id] = win;
-      return { sessions: msg.sessions, machines: msg.machines, accounts: msg.accounts, logs, loaded: true };
+      const replies: Record<string, ReplyRecord[]> = {};
+      for (const [id, list] of Object.entries(state.replies)) if (alive.has(id)) replies[id] = list;
+      return { ...state, sessions: msg.sessions, machines: msg.machines, accounts: msg.accounts, logs, replies, loaded: true };
     }
+    case 'reply':
+      return { ...state, replies: { ...state.replies, [msg.sessionId]: mergeReplies(state.replies[msg.sessionId], [msg.reply]) } };
     case 'session':
       return { ...state, sessions: upsert(state.sessions, msg.session, (s) => s.id === msg.session.id) };
     case 'machine':
@@ -99,8 +125,15 @@ export function applyMessage(state: DashboardState, msg: StreamMessage): Dashboa
     case 'removed': {
       const gone = new Set(msg.sessionIds);
       const logs = { ...state.logs };
-      for (const id of msg.sessionIds) delete logs[id];
-      return { ...state, sessions: state.sessions.filter((s) => !gone.has(s.id)), logs };
+      const replies = { ...state.replies };
+      for (const id of msg.sessionIds) { delete logs[id]; delete replies[id]; }
+      return {
+        ...state,
+        sessions: state.sessions.filter((s) => !gone.has(s.id)),
+        history: state.history ? state.history.filter((s) => !gone.has(s.id)) : null,
+        logs,
+        replies,
+      };
     }
     default:
       return state;
@@ -123,8 +156,12 @@ export type Action =
   | { type: 'logLoading'; sessionId: string }
   | { type: 'logPage'; sessionId: string; kind: PageKind; res: LogResponse }
   | { type: 'logFailed'; sessionId: string }
-  /** 지우기에 실패해 되돌린다. index는 원래 자리. */
-  | { type: 'restore'; session: SessionView; log?: LogWindow; index: number };
+  /** 지우기에 실패해 되돌린다. index는 원래 자리. inHistory면 기록 탭 목록에 되돌린다. */
+  | { type: 'restore'; session: SessionView; log?: LogWindow; index: number; inHistory?: boolean }
+  /** 서버에서 받은 답 기록 */
+  | { type: 'replies'; sessionId: string; replies: ReplyRecord[] }
+  /** 기록 탭 목록을 받았다 */
+  | { type: 'history'; sessions: SessionView[]; machines: MachineView[] };
 
 /** 서버가 준 한 쪽을 창에 합친다. */
 export function applyPage(prev: LogWindow | undefined, kind: PageKind, res: LogResponse): LogWindow {
@@ -171,17 +208,28 @@ export function reduce(s: DashboardState, a: Action): DashboardState {
       return { ...s, logs: { ...s.logs, [a.sessionId]: { ...base, loading: true } } };
     }
     case 'logPage':
-      if (!s.sessions.some((x) => x.id === a.sessionId)) return s;
+      if (!known(s, a.sessionId)) return s;
       return { ...s, logs: { ...s.logs, [a.sessionId]: applyPage(s.logs[a.sessionId], a.kind, a.res) } };
+    case 'replies':
+      if (!known(s, a.sessionId)) return s;
+      return { ...s, replies: { ...s.replies, [a.sessionId]: mergeReplies(s.replies[a.sessionId], a.replies) } };
+    case 'history':
+      return { ...s, history: a.sessions, historyMachines: a.machines };
     case 'logFailed': {
       const prev = s.logs[a.sessionId];
       return { ...s, logs: { ...s.logs, [a.sessionId]: { ...(prev ?? emptyWindow), loading: false } } };
     }
     case 'restore': {
+      const logs = a.log && !s.logs[a.session.id] ? { ...s.logs, [a.session.id]: a.log } : s.logs;
+      if (a.inHistory) {
+        if (!s.history || s.history.some((x) => x.id === a.session.id)) return s;
+        const history = s.history.slice();
+        history.splice(Math.min(Math.max(a.index, 0), history.length), 0, a.session);
+        return { ...s, history, logs };
+      }
       if (s.sessions.some((x) => x.id === a.session.id)) return s;
       const sessions = s.sessions.slice();
       sessions.splice(Math.min(Math.max(a.index, 0), sessions.length), 0, a.session);
-      const logs = a.log && !s.logs[a.session.id] ? { ...s.logs, [a.session.id]: a.log } : s.logs;
       return { ...s, sessions, logs };
     }
     default:
@@ -201,11 +249,19 @@ export type Dashboard = DashboardState & {
   jumpTo: (sessionId: string, seq: number) => Promise<void>;
   /** 화면에서 바로 없애고 서버에 지우기를 요청한다. 실패하면 되돌리고 false. */
   removeSession: (sessionId: string) => Promise<boolean>;
-  /** 세션별 텔레그램 알림을 화면에서 바로 바꾸고 서버에 저장한다. 실패하면 되돌리고 false. */
+  /** 세션별 알림(텔레그램·웹 공통)을 화면에서 바로 바꾸고 서버에 저장한다. 실패하면 되돌리고 false. */
   setTelegram: (sessionId: string, on: boolean) => Promise<boolean>;
+  /** 기록 탭 목록을 (다시) 불러온다. 실패하면 null. */
+  loadHistory: () => Promise<SessionView[] | null>;
 };
 
-export function useDashboard(): Dashboard {
+export type DashboardOptions = {
+  /** 관리자가 남의 대시보드를 볼 때 그 사용자 id(스트림·기록에 ?user=) */
+  userId?: string;
+};
+
+export function useDashboard(opts: DashboardOptions = {}): Dashboard {
+  const { userId } = opts;
   const [state, dispatch] = useReducer(reduce, emptyState);
   const [connected, setConnected] = useState(false);
   const ref = useRef(state);
@@ -226,7 +282,24 @@ export function useDashboard(): Dashboard {
     }
   }, []);
 
-  const openLog = useCallback((sessionId: string) => replace(sessionId, 'latest'), [replace]);
+  const openLog = useCallback(async (sessionId: string) => {
+    // 답 기록은 대화와 함께 부르되, 없거나 실패해도 대화는 보인다.
+    api.getReplies(sessionId)
+      .then((replies) => { if (replies.length) dispatch({ type: 'replies', sessionId, replies }); })
+      .catch(() => { /* 답 기록 없이 보인다 */ });
+    await replace(sessionId, 'latest');
+  }, [replace]);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      const snap = await api.getHistory(userId);
+      const sessions = snap?.sessions ?? [];
+      dispatch({ type: 'history', sessions, machines: snap?.machines ?? [] });
+      return sessions;
+    } catch {
+      return null;
+    }
+  }, [userId]);
 
   const loadOlder = useCallback(async (sessionId: string) => {
     const win = ref.current.logs[sessionId];
@@ -268,9 +341,9 @@ export function useDashboard(): Dashboard {
 
   useEffect(() => {
     let snapshots = 0;
-    return connectStream({
+    const handlers = {
       onStatus: setConnected,
-      onMessage: (msg) => {
+      onMessage: (msg: StreamMessage) => {
         dispatch(msg);
         if (msg.type !== 'snapshot') return;
         snapshots += 1;
@@ -279,8 +352,12 @@ export function useDashboard(): Dashboard {
         const alive = new Set(msg.sessions.map((s) => s.id));
         for (const id of Object.keys(ref.current.logs)) if (alive.has(id)) void fillMissing(id);
       },
-    });
-  }, [fillMissing]);
+    };
+    // 관리자가 남의 대시보드를 볼 때만 ?user= 를 붙인다(평소에는 기본 주소).
+    return userId
+      ? connectStream(handlers, { url: `${API.stream}?user=${encodeURIComponent(userId)}` })
+      : connectStream(handlers);
+  }, [fillMissing, userId]);
 
   const markSeen = useCallback((sessionId: string) => {
     dispatch({ type: 'seen', sessionId });
@@ -288,10 +365,12 @@ export function useDashboard(): Dashboard {
   }, []);
 
   const removeSession = useCallback(async (sessionId: string) => {
-    const index = ref.current.sessions.findIndex((s) => s.id === sessionId);
-    if (index < 0) return true;
-    const session = ref.current.sessions[index]!;
-    const log = ref.current.logs[sessionId];
+    const cur = ref.current;
+    const index = cur.sessions.findIndex((s) => s.id === sessionId);
+    const hIndex = cur.history?.findIndex((s) => s.id === sessionId) ?? -1;
+    if (index < 0 && hIndex < 0) return true;
+    const session = index >= 0 ? cur.sessions[index]! : cur.history![hIndex]!;
+    const log = cur.logs[sessionId];
     dispatch({ type: 'removed', sessionIds: [sessionId] });
     try {
       await api.deleteSession(sessionId);
@@ -299,7 +378,8 @@ export function useDashboard(): Dashboard {
     } catch (e) {
       // 이미 없는 세션(404)이면 지운 것과 같다.
       if (e instanceof api.ApiError && e.status === 404) return true;
-      dispatch({ type: 'restore', session, log, index });
+      if (index >= 0) dispatch({ type: 'restore', session, log, index });
+      if (hIndex >= 0) dispatch({ type: 'restore', session, log, index: hIndex, inHistory: true });
       return false;
     }
   }, []);
@@ -325,5 +405,5 @@ export function useDashboard(): Dashboard {
     }
   }, []);
 
-  return { ...state, connected, markSeen, openLog, loadOlder, jumpTo, removeSession, setTelegram };
+  return { ...state, connected, markSeen, openLog, loadOlder, jumpTo, removeSession, setTelegram, loadHistory };
 }

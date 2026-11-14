@@ -91,6 +91,23 @@ export const ExternalIcon = (p: P) => (
   <Svg {...p}><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></Svg>
 );
 
+/** 공유(세 점을 잇는 선) */
+export const ShareIcon = (p: P) => (
+  <Svg {...p}>
+    <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+    <path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98" />
+  </Svg>
+);
+export const CopyIcon = (p: P) => (
+  <Svg {...p}><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></Svg>
+);
+export const EyeIcon = (p: P) => (
+  <Svg {...p}><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></Svg>
+);
+export const VolumeIcon = (p: P) => (
+  <Svg {...p}><path d="M11 5 6 9H2v6h4l5 4V5Z" /><path d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14" /></Svg>
+);
+
 /** Google 로고(로그인 버튼). 목업 그대로. */
 export const GoogleLogo = () => (
   <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">

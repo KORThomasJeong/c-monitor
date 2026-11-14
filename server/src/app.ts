@@ -1,12 +1,15 @@
 // Hono 앱 조립. 의존성(deps)을 주입받아 테스트에서 가짜를 넣을 수 있다.
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
+import { adminRoutes } from './admin/routes';
 import { authRoutes } from './auth/routes';
 import { deviceRoutes } from './device/routes';
 import { ingestRoutes } from './ingest/routes';
 import { notifyRoutes } from './notify/routes';
 import { queryRoutes } from './query/routes';
+import { pushRoutes } from './notify/push-routes';
 import { replyRoutes } from './reply/routes';
+import { shareRoutes } from './share/routes';
 import { staticHandler } from './static';
 import { streamRoutes } from './stream/routes';
 import type { Deps, Env } from './types';
@@ -23,11 +26,14 @@ export function createApp(deps: Deps): Hono<Env> {
   app.get('/healthz', (c) => c.json({ ok: true }));
 
   app.route('/', authRoutes(deps));
+  app.route('/', adminRoutes(deps));
   app.route('/', deviceRoutes(deps));
   app.route('/', ingestRoutes(deps));
   app.route('/', queryRoutes(deps));
   app.route('/', replyRoutes(deps));
   app.route('/', notifyRoutes(deps));
+  app.route('/', pushRoutes(deps));
+  app.route('/', shareRoutes(deps));
   app.route('/', streamRoutes(deps));
 
   // 없는 API·auth 경로는 SPA로 떨어지지 않고 404.

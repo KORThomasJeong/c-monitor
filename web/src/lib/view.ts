@@ -7,6 +7,7 @@ import {
   type AccountView,
   type LogLine,
   type MachineView,
+  type ReplyRecord,
   type SessionStatus,
   type SessionView,
 } from '@c-monitor/shared';
@@ -172,6 +173,57 @@ export function toolText(line: LogLine): { head: string; rest: string } {
   const head = (lines.find((l) => l.trim()) ?? '').trim();
   return { head, rest: lines.length > 1 ? body : '' };
 }
+
+/** 낱말 뒤에 붙는 "로/으로". 받침이 있으면(ㄹ 받침 제외) "으로". 한글이 아니면 "로". */
+export function roParticle(word: string): '로' | '으로' {
+  const ch = Array.from(word.trim()).pop();
+  if (!ch) return '로';
+  const code = ch.codePointAt(0)! - 0xac00;
+  if (code < 0 || code > 11171) return '로';
+  const jong = code % 28;
+  return jong === 0 || jong === 8 ? '로' : '으로';
+}
+
+/** 웹·텔레그램 답 기록을 대화 줄 사이에 끼울 한 줄로. 예: "웹에서 「허용」으로 답했습니다" */
+export function replyText(r: Pick<ReplyRecord, 'source' | 'kind' | 'label'>): string {
+  const from = r.source === 'telegram' ? '텔레그램에서' : '웹에서';
+  const label = r.label.trim() || (r.kind === 'message' ? '글' : '답');
+  if (r.kind === 'message') return `${from} 글을 보냈습니다 「${label}」`;
+  return `${from} 「${label}」${roParticle(label)} 답했습니다`;
+}
+
+export type LogItem = { kind: 'line'; line: LogLine } | { kind: 'reply'; reply: ReplyRecord };
+
+/**
+ * 대화 줄 사이에 답 기록을 시각 순으로 끼운다. 같은 시각이면 줄 뒤에 둔다.
+ * 불러온 범위 밖(앞에 줄이 더 있는데 첫 줄보다 이른 기록, 뒤에 줄이 더 있는데 마지막 줄보다 늦은 기록)은 뺀다.
+ */
+export function interleave(
+  lines: LogLine[], replies: ReplyRecord[] | undefined, range: { hasMoreBefore: boolean; hasMoreAfter: boolean },
+): LogItem[] {
+  const out: LogItem[] = lines.map((line) => ({ kind: 'line', line }));
+  if (!replies?.length) return out;
+  const t = (iso: string) => Date.parse(iso) || 0;
+  const firstAt = lines.length ? t(lines[0]!.at) : -Infinity;
+  const lastAt = lines.length ? t(lines[lines.length - 1]!.at) : Infinity;
+  const picked = replies
+    .filter((r) => !(range.hasMoreBefore && t(r.at) < firstAt) && !(range.hasMoreAfter && t(r.at) > lastAt))
+    .slice()
+    .sort((a, b) => t(a.at) - t(b.at));
+  if (!picked.length) return out;
+  const merged: LogItem[] = [];
+  let i = 0;
+  for (const item of out) {
+    const at = t((item as { line: LogLine }).line.at);
+    while (i < picked.length && t(picked[i]!.at) < at) merged.push({ kind: 'reply', reply: picked[i++]! });
+    merged.push(item);
+  }
+  while (i < picked.length) merged.push({ kind: 'reply', reply: picked[i++]! });
+  return merged;
+}
+
+/** 컨텍스트 사용률 표시. null이면 null. */
+export const ctxText = (pct: number | null | undefined) => (pct == null ? null : `${Math.round(pct)}%`);
 
 /** 컴퓨터별 묶음. 컴퓨터 목록 순서를 따르고, 목록에 없는 컴퓨터의 세션은 맨 뒤 묶음으로. */
 export function groupByMachine(

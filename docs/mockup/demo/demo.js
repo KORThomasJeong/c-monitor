@@ -22,6 +22,17 @@
  * "텔레그램 연결"을 누르면 코드가 나오고 몇 초 뒤 연결됨으로 바뀐다(실제 텔레그램은 열지 않는다).
  * 관리 › 알림에서 봇 토큰 바꾸기·끄기, 상세 패널에서 세션별 텔레그램 알림 켜기/끄기를 해 볼 수 있다(api-gateway는 꺼 둠).
  *
+ * 3차(나머지 전부):
+ *   - 공유: 상세 패널 "공유"로 링크 만들기·사람 지정·취소. 공개 보기는 app.html?view=/s/demo (로그인 없이 보기만, 실시간).
+ *   - 공유받은 세션: designer@example.com 이 공유한 세션 두 개가 "공유받은 세션" 묶음에 보인다(보기만).
+ *   - 기록 탭: "현재 / 기록"에서 기록을 누르면 오래전에 끝난 세션까지 보인다.
+ *   - 관리: 사용자(추가·권한·용량 한도·탈퇴 예정 복구·즉시 삭제·대시보드 보기), 모든 컴퓨터, 저장 용량.
+ *     "대시보드 보기"는 /?user=u-member 처럼 그 사람의 대시보드를 읽기 전용으로 연다.
+ *   - 동의·탈퇴: user=consent 는 동의 전 사용자(동의 화면), user=leaving 은 탈퇴 신청한 사용자(탈퇴 취소 화면).
+ *   - 웹 알림: 데모 브라우저는 지원하지 않는 것으로 친다(안내만). 이 계정에 켜 둔 브라우저 하나가 목록에 있다.
+ *   - 컨텍스트 %·비용, 웹·텔레그램 답 기록 줄(drawing-review에 텔레그램 기록, 웹에서 답하면 새 줄).
+ *   - 바로 열기: app.html?view=/%3Fsession%3Ddemo-search-api
+ *
  * 앱은 location.pathname으로 화면을 고르므로 여기서 history.replaceState로 주소를 view 값으로 바꾼다.
  * 그러면 상대 경로 자산이 엉뚱한 곳을 가리키게 되므로, 빌드 스크립트가 넣어 둔 자산 목록
  * (window.__CMON_DEMO_ASSETS__)을 원래 주소 기준 절대 주소로 바꿔 직접 불러온다.
@@ -62,17 +73,17 @@
   var params = new URLSearchParams(location.search);
   var THEME_KEY = 'cs-theme';
   var MODE_KEY = 'cs-mode';
-  var ALLOWED = ['/', '/login', '/pending', '/connect', '/settings', '/admin'];
+  var ALLOWED = ['/', '/login', '/pending', '/connect', '/settings', '/admin', '/withdrawn'];
 
   var startView = (function () {
     var raw = params.get('view') || '/';
     if (raw.charAt(0) !== '/' || raw.charAt(1) === '/') raw = '/';
     var u = new URL(raw, 'http://demo.invalid');
-    if (ALLOWED.indexOf(u.pathname) < 0) return '/';
+    if (ALLOWED.indexOf(u.pathname) < 0 && !/^\/s\/[A-Za-z0-9_-]+$/.test(u.pathname)) return '/';
     return u.pathname + u.search + u.hash;
   })();
   var startPath = startView.split(/[?#]/)[0];
-  var userKind = ['admin', 'user', 'pending'].indexOf(params.get('user')) >= 0 ? params.get('user') : 'admin';
+  var userKind = ['admin', 'user', 'pending', 'consent', 'leaving'].indexOf(params.get('user')) >= 0 ? params.get('user') : 'admin';
   var selWanted = params.get('sel');
 
   function store(key, value) {
@@ -98,18 +109,39 @@
   var ACC_A = 'dev@company-a.example';
   var ACC_B = 'dev@company-b.example';
 
+  var DAY = 24 * 60;
+  var MB = 1024 * 1024;
   var USERS = [
-    { id: 'u-admin', email: 'admin@example.com', name: '관리자', role: 'admin', status: 'active', createdAt: ago(60 * 24 * 40) },
-    { id: 'u-member', email: 'member@example.com', name: '홍길동', role: 'user', status: 'active', createdAt: ago(60 * 24 * 21) },
-    { id: 'u-design', email: 'designer@example.com', name: '성춘향', role: 'user', status: 'active', createdAt: ago(60 * 24 * 9) },
-    { id: 'u-new1', email: 'newcomer@example.com', name: '이몽룡', role: 'user', status: 'pending', createdAt: ago(35) },
-    { id: 'u-new2', email: 'intern@example.com', name: null, role: 'user', status: 'pending', createdAt: ago(60 * 5) },
-    { id: 'u-old', email: 'former@example.com', name: '심청', role: 'user', status: 'suspended', createdAt: ago(60 * 24 * 70) },
+    { id: 'u-admin', email: 'admin@example.com', name: '관리자', role: 'admin', status: 'active', createdAt: ago(DAY * 40),
+      consentedAt: ago(DAY * 40), deleteAt: null, lastLoginAt: ago(1), quotaMb: 0, invited: false },
+    { id: 'u-member', email: 'member@example.com', name: '홍길동', role: 'user', status: 'active', createdAt: ago(DAY * 21),
+      consentedAt: ago(DAY * 21), deleteAt: null, lastLoginAt: ago(60 * 3), quotaMb: 1024, invited: false },
+    { id: 'u-design', email: 'designer@example.com', name: '성춘향', role: 'user', status: 'active', createdAt: ago(DAY * 9),
+      consentedAt: ago(DAY * 9), deleteAt: null, lastLoginAt: ago(25), quotaMb: 2048, invited: false },
+    { id: 'u-new1', email: 'newcomer@example.com', name: '이몽룡', role: 'user', status: 'pending', createdAt: ago(35),
+      consentedAt: ago(34), deleteAt: null, lastLoginAt: ago(35), quotaMb: 1024, invited: false },
+    { id: 'u-new2', email: 'intern@example.com', name: null, role: 'user', status: 'pending', createdAt: ago(60 * 5),
+      consentedAt: ago(60 * 5), deleteAt: null, lastLoginAt: ago(60 * 5), quotaMb: 1024, invited: false },
+    { id: 'u-old', email: 'former@example.com', name: '심청', role: 'user', status: 'suspended', createdAt: ago(DAY * 70),
+      consentedAt: ago(DAY * 70), deleteAt: null, lastLoginAt: ago(DAY * 30), quotaMb: 1024, invited: false },
+    { id: 'u-fresh', email: 'fresh@example.com', name: '새내기', role: 'user', status: 'active', createdAt: ago(DAY * 1),
+      consentedAt: null, deleteAt: null, lastLoginAt: ago(2), quotaMb: 1024, invited: false },
+    { id: 'u-leave', email: 'leaving@example.com', name: '흥부', role: 'user', status: 'active', createdAt: ago(DAY * 50),
+      consentedAt: ago(DAY * 50), deleteAt: iso(T0 + 5 * DAY * MIN), lastLoginAt: ago(DAY * 2), quotaMb: 1024, invited: false },
+    { id: 'u-invite', email: 'invited@example.com', name: null, role: 'user', status: 'active', createdAt: ago(DAY * 2),
+      consentedAt: null, deleteAt: null, lastLoginAt: null, quotaMb: 1024, invited: true },
   ];
+  /** 사용자별 저장 용량(바이트, 지어낸 값) */
+  var USAGE = {
+    'u-admin': 412 * MB, 'u-member': 1010 * MB, 'u-design': 260 * MB, 'u-new1': 0, 'u-new2': 0,
+    'u-old': 35 * MB, 'u-fresh': 2 * MB, 'u-leave': 88 * MB, 'u-invite': 0,
+  };
   var ME_BY_KIND = {
     admin: 'u-admin',
     user: 'u-member',
     pending: 'u-new1',
+    consent: 'u-fresh',
+    leaving: 'u-leave',
   };
   var meId = ME_BY_KIND[userKind];
   var loggedIn = startPath !== '/login';
@@ -141,6 +173,102 @@
 
   var settings = { lostMinutes: 10, endHours: 24, keepChatDays: 30, keepUsageDays: 90 };
 
+  // ── 3차: 공유·답 기록·웹 알림·남의 컴퓨터(전부 지어낸 값) ──
+  /** 공개 링크 토큰 → 세션. "demo" 토큰은 search-api를 보여 준다(app.html?view=/s/demo). */
+  var publicLinks = {
+    demo: { sessionId: 'demo-search-api', shareId: 'sh-demo', expiresAt: iso(T0 + 7 * 24 * 60 * MIN) },
+  };
+  /** 세션 id → 공유 목록(ShareView, url은 만들 때만) */
+  var shares = {
+    'demo-search-api': [
+      { id: 'sh-demo', kind: 'link', url: null, email: null, expiresAt: iso(T0 + 7 * 24 * 60 * MIN), createdAt: ago(60) },
+      { id: 'sh-user-1', kind: 'user', url: null, email: 'member@example.com', expiresAt: null, createdAt: ago(40) },
+    ],
+  };
+  var shareSeq = 1;
+  var revokedTokens = {};
+  /** 세션 id → 웹·텔레그램 답 기록 */
+  var replyRecs = {};
+  var replySeq = 0;
+  function recordReply(sid, kind, label, source) {
+    replySeq += 1;
+    var r = { id: 'rr-' + replySeq, at: nowIso(), source: source || 'web', kind: kind, label: String(label).slice(0, 200) };
+    (replyRecs[sid] = replyRecs[sid] || []).push(r);
+    publish({ type: 'reply', sessionId: sid, reply: clone(r) });
+    return r;
+  }
+  /** 이 계정에 웹 알림을 켜 둔 브라우저(데모 브라우저 자체는 지원하지 않는 것으로 친다) */
+  var pushSubs = [
+    { endpoint: 'https://push.example.invalid/demo-phone', label: 'Chrome · Android', createdAt: ago(2 * 24 * 60) },
+  ];
+  /** 다른 사용자의 컴퓨터(관리 › 컴퓨터, 관리자가 남의 대시보드를 볼 때) */
+  var OTHER_MACHINES = {
+    'u-member': [
+      { id: 'm-mem-lap', name: '홍길동 노트북', os: 'macOS 15', pluginVersion: '0.3.0', lastSeenAt: ago(1), online: true, remoteReply: true },
+    ],
+    'u-design': [
+      { id: 'm-des', name: '디자인 맥', os: 'macOS 14', pluginVersion: '0.2.0', lastSeenAt: ago(0.5), online: true, remoteReply: false },
+    ],
+    'u-leave': [
+      { id: 'm-leave', name: 'old-desktop', os: 'Windows 10', pluginVersion: '0.1.0', lastSeenAt: ago(2 * 24 * 60), online: false, remoteReply: false },
+    ],
+  };
+  var OTHER_ACCOUNTS = { 'u-member': 'dev@company-b.example', 'u-design': 'dev@company-c.example', 'u-leave': null };
+  /** 관리자가 남의 대시보드를 볼 때의 한 화면분(쓰기 정보는 비운다). 내 것이면 평소 스냅샷. */
+  function snapshotFor(uid, all) {
+    if (!uid || uid === meId) return snapshot(all);
+    var list = otherSessions.filter(function (s) { return s.ownerId === uid; }).map(function (s) {
+      var v = clone(s);
+      delete v.ownerId;
+      v.canReply = false;
+      v.queuedMessages = 0;
+      v.pending = null;
+      v.remoteUrl = null;
+      return v;
+    });
+    return { sessions: list, machines: clone(OTHER_MACHINES[uid] || []), accounts: [] };
+  }
+  /** 공개 링크 보기(PublicSessionView). 없거나 만료·세션 삭제면 null. */
+  function publicView(token) {
+    var link = Object.prototype.hasOwnProperty.call(publicLinks, token) ? publicLinks[token] : null;
+    // 새 창(새 데모)에서 연 링크: 토큰에 적힌 세션 이름으로 다시 만든다. 이 창에서 취소한 링크는 되살리지 않는다.
+    var made = /^demo\d+_([A-Za-z0-9-]+)$/.exec(token);
+    if (!link && made && !revokedTokens[token]) link = publicLinks[token] = { sessionId: 'demo-' + made[1], shareId: null, expiresAt: null };
+    if (!link) return null;
+    if (link.expiresAt && Date.parse(link.expiresAt) <= Date.now()) return null;
+    var s = sessionById(link.sessionId);
+    if (!s) return null;
+    return {
+      name: s.name, status: s.status, branch: s.branch, model: s.model, startedAt: s.startedAt, lastEventAt: s.lastEventAt,
+      endedAt: s.endedAt, activity: clone(s.activity), contextPct: s.contextPct, costUsd: s.costUsd, expiresAt: link.expiresAt,
+    };
+  }
+  /** 대화 한 쪽(계약의 before/after/around/limit 규칙). 잘못된 쿼리면 null. */
+  function pageOf(all, q) {
+    var keys = ['before', 'after', 'around'].filter(function (k) { return q.has(k); });
+    if (keys.length > 1) return null;
+    var limit = q.has('limit') ? Number(q.get('limit')) : 100;
+    if (!Number.isInteger(limit) || limit < 1) limit = 100;
+    limit = Math.min(limit, 500);
+    var picked;
+    if (keys.length === 0) picked = all.slice(-limit);
+    else {
+      var at = Number(q.get(keys[0]));
+      if (!Number.isInteger(at)) return null;
+      if (keys[0] === 'after') picked = all.filter(function (l) { return l.seq > at; }).slice(0, limit);
+      else if (keys[0] === 'before') picked = all.filter(function (l) { return l.seq < at; }).slice(-limit);
+      else {
+        var idx = Math.max(0, Math.min(all.length - limit, at - Math.floor(limit / 2)));
+        picked = all.slice(idx, idx + limit);
+      }
+    }
+    return {
+      lines: clone(picked), total: all.length,
+      hasMoreBefore: picked.length > 0 ? picked[0].seq > 0 : false,
+      hasMoreAfter: picked.length > 0 ? picked[picked.length - 1].seq < all.length - 1 : false,
+    };
+  }
+
   // 텔레그램 알림. 봇 이름·토큰 끝자리는 지어낸 값이다.
   var DEMO_BOT = 'c_monitor_demo_bot';
   var adminTg = {
@@ -167,6 +295,7 @@
     return Object.assign({
       account: ACC_A, branch: 'main', model: 'claude-sonnet-4-5', status: 'run', seen: true,
       endedAt: null, activity: null, pending: null, canReply: false, queuedMessages: 0, remoteUrl: null, telegram: true,
+      contextPct: null, costUsd: null,
     }, o, { id: 'demo-' + o.name });
   }
   var sessions = [
@@ -207,6 +336,45 @@
       status: 'end', startedAt: ago(240), lastEventAt: ago(185), endedAt: ago(185),
       activity: { label: '종료', text: 'prompt_input_exit' } }),
   ];
+  // 컨텍스트 사용률(%)·누적 비용(USD) — 상태줄이 보내는 값을 흉내 낸다.
+  var STATS = {
+    'search-api': [64, 3.12], 'blog-site': [48, 1.97], 'data-pipeline': [22, 0.41], 'drawing-review': [71, 6.4],
+    'homepage': [31, 0.84], 'api-gateway': [88, 7.25], 'report-batch': [96, 4.1], 'mobile-app': [17, 0.22], 'infra-scripts': [55, 2.05],
+  };
+  sessions.forEach(function (s) {
+    var st = STATS[s.name];
+    if (st) { s.contextPct = st[0]; s.costUsd = st[1]; }
+  });
+  // 공유받은 세션(designer@example.com 이 사람 지정으로 공유). 보기만 할 수 있다.
+  sessions.push(
+    S({ name: 'design-system', machineId: 'm-shared', account: 'dev@company-c.example', cwd: '/Users/design/design-system', branch: 'tokens/v2',
+      status: 'run', startedAt: ago(25), lastEventAt: ago(0.5), sharedBy: 'designer@example.com', contextPct: 35, costUsd: 1.2,
+      activity: { label: 'Edit', text: 'tokens/color.json' } }),
+    S({ name: 'landing-copy', machineId: 'm-shared', account: 'dev@company-c.example', cwd: '/Users/design/landing-copy', branch: 'main',
+      status: 'end', startedAt: ago(150), lastEventAt: ago(90), endedAt: ago(90), sharedBy: 'designer@example.com', contextPct: 12, costUsd: 0.3,
+      activity: { label: '종료', text: 'prompt_input_exit' } })
+  );
+  // 오래전에 끝난 세션(종료 카드 유지 시간이 지나 "기록" 탭에서만 보인다).
+  sessions.push(
+    S({ name: 'legacy-migration', machineId: 'm-srv', cwd: '/home/dev/legacy-migration', branch: 'chore/db-upgrade',
+      status: 'end', startedAt: ago(3 * 24 * 60 + 90), lastEventAt: ago(3 * 24 * 60), endedAt: ago(3 * 24 * 60), contextPct: 77, costUsd: 9.8,
+      activity: { label: '종료', text: 'prompt_input_exit' } }),
+    S({ name: 'docs-cleanup', machineId: 'm-home', account: ACC_B, cwd: 'D:\\work\\docs-cleanup', branch: 'main',
+      status: 'end', startedAt: ago(5 * 24 * 60 + 40), lastEventAt: ago(5 * 24 * 60), endedAt: ago(5 * 24 * 60), contextPct: 19, costUsd: 0.6,
+      activity: { label: '종료', text: 'prompt_input_exit' } })
+  );
+  // 다른 사용자의 세션(관리자가 "대시보드 보기"로 볼 때만). ownerId가 있으면 내 대시보드에는 나오지 않는다.
+  var otherSessions = [
+    S({ name: 'member-notes', ownerId: 'u-member', machineId: 'm-mem-lap', account: 'dev@company-b.example', cwd: '/Users/hong/notes',
+      status: 'run', startedAt: ago(18), lastEventAt: ago(0.3), contextPct: 26, costUsd: 0.5,
+      activity: { label: 'Bash', text: 'npm run build' } }),
+    S({ name: 'member-api', ownerId: 'u-member', machineId: 'm-mem-lap', account: 'dev@company-b.example', cwd: '/Users/hong/api',
+      status: 'wait', seen: false, startedAt: ago(40), lastEventAt: ago(3), contextPct: 58, costUsd: 2.4,
+      activity: { label: '알림', text: 'Claude needs your permission to use Bash' } }),
+    S({ name: 'brand-site', ownerId: 'u-design', machineId: 'm-des', account: 'dev@company-c.example', cwd: '/Users/design/brand-site',
+      status: 'done', startedAt: ago(60), lastEventAt: ago(6), contextPct: 41, costUsd: 1.1,
+      activity: { label: '완료', text: '헤더 디자인을 정리했습니다.' } }),
+  ];
 
   // ── 대화 기록 ───────────────────────────────────────────
   var logs = {};
@@ -226,7 +394,7 @@
     return api;
   }
   function spreadTimes() {
-    sessions.forEach(function (s) {
+    sessions.concat(otherSessions).forEach(function (s) {
       var lines = logs[s.id] || [];
       var start = Date.parse(s.startedAt) + 20000;
       var end = Date.parse(s.lastEventAt);
@@ -368,20 +536,58 @@
     .tr('Edit', 'The file backup/run.sh has been updated.')
     .a('매일 04:00에 도는 것을 확인했고, 30일 지난 백업을 지우는 줄을 넣었습니다.', 60);
 
+  Log('demo-design-system')
+    .u('색 토큰을 v2 이름 규칙으로 바꿔 주세요. 기존 이름은 별칭으로 남겨 두고요.')
+    .a('토큰 파일 구조를 먼저 살펴보겠습니다.')
+    .tu('Read', { file_path: 'tokens/color.json' })
+    .tr('Read', '{ "blue-500": "#1677FF", "teal-500": "#0E9488", … }')
+    .a('v2 이름(primary, accent 등)으로 옮기고 옛 이름은 별칭으로 남기겠습니다.')
+    .tu('Edit', { file_path: 'tokens/color.json' });
+  Log('demo-landing-copy')
+    .u('첫 화면 문구를 세 가지 안으로 써 주세요.')
+    .a('세 가지 안을 썼습니다. 1안은 짧고, 2안은 기능 중심, 3안은 사례 중심입니다.');
+  Log('demo-legacy-migration')
+    .u('DB를 새 버전으로 올리는 마이그레이션을 준비해 주세요.')
+    .tu('Bash', { command: 'npm run migrate -- --dry-run' })
+    .tr('Bash', ' ✓ 7 migrations pending (dry run)')
+    .a('마이그레이션 7건을 확인했습니다. 실제 적용은 점검 시간에 하시면 됩니다.');
+  Log('demo-docs-cleanup')
+    .u('오래된 문서를 정리해 주세요.')
+    .a('쓰지 않는 문서 12개를 archive 폴더로 옮겼습니다.');
+  Log('demo-member-notes')
+    .u('노트 앱 빌드가 깨져요.')
+    .tu('Bash', { command: 'npm run build' });
+  Log('demo-member-api')
+    .u('API 서버를 다시 띄워 주세요.')
+    .a('서버를 다시 시작하려면 승인이 필요합니다.');
+  Log('demo-brand-site')
+    .u('헤더 디자인 정리해 주세요.')
+    .a('헤더 디자인을 정리했습니다.');
+  // drawing-review는 텔레그램에서 승인한 기록이 하나 있다(대화 줄 사이에 "텔레그램에서 「허용」으로 답했습니다").
+  replyRecs['demo-drawing-review'] = [{ id: 'rr-0', at: ago(40), source: 'telegram', kind: 'permission', label: '허용' }];
   spreadTimes();
 
   // ── 화면용 조합 ────────────────────────────────────────
   function me() { return USERS.filter(function (u) { return u.id === meId; })[0]; }
-  function userView(u) { return { id: u.id, email: u.email, name: u.name, role: u.role, status: u.status }; }
+  function userView(u) {
+    return { id: u.id, email: u.email, name: u.name, role: u.role, status: u.status, consentedAt: u.consentedAt || null, deleteAt: u.deleteAt || null };
+  }
+  function machinesOf(uid) { return uid === meId ? machines : (OTHER_MACHINES[uid] || []); }
+  function adminUserView(u) {
+    return Object.assign(userView(u), {
+      createdAt: u.createdAt, lastLoginAt: u.lastLoginAt || null, quotaMb: u.quotaMb, bytes: USAGE[u.id] || 0,
+      machines: machinesOf(u.id).length, invited: !!u.invited,
+    });
+  }
   function sessionById(id) {
-    return sessions.filter(function (s) { return s.id === id; })[0] || null;
+    return sessions.concat(otherSessions).filter(function (s) { return s.id === id; })[0] || null;
   }
   function visibleSessions(all) {
     var cutoff = Date.now() - settings.endHours * 60 * MIN;
     var alive = machines.map(function (m) { return m.id; });
     return sessions.filter(function (s) {
       if (all) return true;
-      if (alive.indexOf(s.machineId) < 0) return false;
+      if (alive.indexOf(s.machineId) < 0 && !s.sharedBy) return false;
       return !(s.status === 'end' && s.endedAt && Date.parse(s.endedAt) < cutoff);
     });
   }
@@ -403,6 +609,7 @@
   }
   // 계약의 canReply 규칙: 소유자 본인(데모 세션은 모두 내 것), 원격 답장 켜짐, 플러그인 0.2.0 이상, 종료·끊김 아님
   function canReplyOf(s) {
+    if (s.sharedBy || s.ownerId) return false;
     var m = machineOf(s);
     return !!m && m.remoteReply && versionAtLeast(m.pluginVersion, '0.2.0') && s.status !== 'end' && s.status !== 'lost';
   }
@@ -421,7 +628,17 @@
   var streams = [];
   function publish(msg) {
     var data = JSON.stringify(msg);
-    streams.slice().forEach(function (es) { es._message(data); });
+    // 내 대시보드 스트림에만 보낸다(관리자가 남의 대시보드를 보는 스트림·공개 링크 스트림에는 보내지 않는다).
+    streams.slice().forEach(function (es) { if (!es._public && es._user === meId) es._message(data); });
+    // 공개 링크 스트림에는 그 세션의 상태(public)와 새 줄(log)만, 세션 id 없이.
+    if (msg.type === 'log' || msg.type === 'session') {
+      var sid = msg.type === 'log' ? msg.sessionId : msg.session.id;
+      streams.slice().forEach(function (es) {
+        var link = es._public && publicLinks[es._public];
+        if (!link || link.sessionId !== sid) return;
+        es._message(JSON.stringify(msg.type === 'log' ? { type: 'log', lines: msg.lines } : { type: 'public', session: publicView(es._public) }));
+      });
+    }
   }
   function publishSession(s) { publish({ type: 'session', session: sessionView(s) }); }
 
@@ -436,12 +653,27 @@
     var self = this;
     setTimeout(function () {
       if (self.readyState === 2) return;
-      var ok = new URL(self.url).pathname === '/api/stream' && loggedIn && me().status === 'active';
+      var u = new URL(self.url);
+      var pm = /^\/api\/public\/s\/([^/]+)\/stream$/.exec(u.pathname);
+      if (pm) {
+        self._public = decodeURIComponent(pm[1]);
+        if (!publicView(self._public)) { self.readyState = 2; self._fire('error', new Event('error')); return; }
+        self.readyState = 1;
+        streams.push(self);
+        self._fire('open', new Event('open'));
+        self._message(JSON.stringify({ type: 'public', session: publicView(self._public) }));
+        startWorld();
+        return;
+      }
+      var want = u.searchParams.get('user');
+      self._user = want || meId;
+      var ok = u.pathname === '/api/stream' && loggedIn && me().status === 'active' && !me().deleteAt
+        && (self._user === meId || me().role === 'admin');
       if (!ok) { self.readyState = 2; self._fire('error', new Event('error')); return; }
       self.readyState = 1;
       streams.push(self);
       self._fire('open', new Event('open'));
-      self._message(JSON.stringify(Object.assign({ type: 'snapshot' }, snapshot(false))));
+      self._message(JSON.stringify(Object.assign({ type: 'snapshot' }, snapshotFor(self._user, false))));
       startWorld();
     }, 180);
   }
@@ -638,6 +870,7 @@
   function guard(level) {
     if (!loggedIn) return J(401, { error: 'unauthorized' });
     var u = me();
+    if (level !== 'any' && u.deleteAt) return J(403, { error: 'withdrawn' });
     if (level !== 'any' && u.status !== 'active') return J(403, { error: u.status });
     if (level === 'admin' && u.role !== 'admin') return J(403, { error: 'forbidden' });
     return null;
@@ -668,7 +901,9 @@
 
     if (p === '/api/sessions' && method === 'GET') {
       if ((g = guard('active'))) return g;
-      return J(200, snapshot(url.searchParams.get('history') === '1'));
+      var uq = url.searchParams.get('user');
+      if (uq && uq !== meId && me().role !== 'admin') return J(403, { error: 'forbidden' });
+      return J(200, snapshotFor(uq || meId, url.searchParams.get('history') === '1'));
     }
 
     if ((m = /^\/api\/sessions\/([^/]+)\/log$/.exec(p)) && method === 'GET') {
@@ -742,7 +977,7 @@
       if ((g = guard('active'))) return g;
       var did = decodeURIComponent(m[1]);
       var ds = sessionById(did);
-      if (!ds) return notFound();
+      if (!ds || ds.sharedBy || ds.ownerId) return notFound();
       if (ds.status !== 'end' && ds.status !== 'lost') return J(409, { error: 'session_active' });
       sessions = sessions.filter(function (x) { return x.id !== did; });
       delete logs[did];
@@ -763,7 +998,7 @@
       if (method === 'GET') return J(200, clone(settings));
       if (method === 'PUT') {
         var b = body || {};
-        var limits = { lostMinutes: [1, 1440], endHours: [0, 8760], keepChatDays: [1, 3650], keepUsageDays: [1, 3650] };
+        var limits = { lostMinutes: [1, 1440], endHours: [0, 8760], keepChatDays: [0, 3650], keepUsageDays: [0, 3650] };
         for (var k in b) {
           if (!limits[k] || !isInt(b[k], limits[k][0], limits[k][1])) return J(400, { error: 'invalid_body' });
         }
@@ -868,13 +1103,13 @@
         var lines = [];
         var steps;
         if (rb.type === 'permission' && rb.behavior === 'deny') {
-          lines.push({ role: 'system', text: '웹 대시보드에서 「거부」로 답했습니다' });
+          recordReply(rid, 'permission', '거부');
           lines.push({ role: 'tool', toolName: pd.toolName, text: "The user doesn't want to proceed with this tool use. The tool use was rejected." });
           if (msg) lines.push({ role: 'user', text: msg });
           var after = msg ? '알겠습니다. 실행하지 않고 말씀하신 대로 바꿔서 진행하겠습니다.' : '알겠습니다. 그 명령은 실행하지 않겠습니다. 다른 방법이 필요하면 알려 주세요.';
           steps = [{ wait: 2200, lines: [{ role: 'assistant', text: after }], patch: { status: 'done', activity: { label: '완료', text: after } } }];
         } else if (rb.type === 'permission') {
-          lines.push({ role: 'system', text: '웹 대시보드에서 「' + BEHAVIOR_LABEL[rb.behavior] + '」로 답했습니다' });
+          recordReply(rid, 'permission', BEHAVIOR_LABEL[rb.behavior]);
           var ok = pd.summary.indexOf('migrate') >= 0 ? ' ✓ 2 migrations applied (staging) in 1.8s' : '완료 · 0.' + (3 + (reqSeq % 6)) + '초';
           var fin = pd.summary.indexOf('migrate') >= 0
             ? '스테이징 DB에 인덱스 마이그레이션 2건을 적용했습니다. 검색 응답 시간도 다시 확인해 두었습니다.'
@@ -886,6 +1121,7 @@
         } else {
           var pairs = Object.keys(rb.answers).map(function (k) { return '"' + k + '"="' + String(rb.answers[k]).slice(0, 4000) + '"'; });
           var first = String(rb.answers[Object.keys(rb.answers)[0]] || '');
+          recordReply(rid, 'answer', Object.keys(rb.answers).map(function (k) { return String(rb.answers[k]); }).join(' / ').slice(0, 200));
           lines.push({ role: 'tool', toolName: pd.toolName, text: 'User has answered your questions: ' + pairs.join(', ') + '.' });
           var plan = '「' + first.slice(0, 60) + '」(으)로 정하셨군요. 그 방식으로 글 목록 페이지를 만들겠습니다.';
           steps = [
@@ -903,6 +1139,7 @@
       if (rb.type === 'message') {
         var text = typeof rb.text === 'string' ? rb.text.trim() : '';
         if (!text || text.length > 4000) return J(400, { error: 'invalid_body' });
+        recordReply(rid, 'message', text.slice(0, 200));
         if (rs.status === 'done') { deliver(rid, text); return J(200, { ok: true, queued: false }); }
         // 작업 중·답 기다림·한도 초과: 쌓아 두었다가 작업이 끝나면 넘긴다.
         (queues[rid] = queues[rid] || []).push(text);
@@ -945,7 +1182,7 @@
       var order = USERS.slice().sort(function (x, y) {
         return (y.status === 'pending') - (x.status === 'pending') || Date.parse(y.createdAt) - Date.parse(x.createdAt);
       });
-      return J(200, { users: clone(order) });
+      return J(200, { users: order.map(adminUserView) });
     }
 
     if ((m = /^\/api\/admin\/users\/([^/]+)\/(approve|suspend)$/.exec(p)) && method === 'POST') {
@@ -956,6 +1193,232 @@
       if (m[2] === 'suspend' && uid === meId) return J(400, { error: 'cannot_suspend_self' });
       target.status = m[2] === 'approve' ? 'active' : 'suspended';
       return J(200, { user: clone(target) });
+    }
+
+    // ══ 3차 ═══════════════════════════════════════════════
+    // 웹·텔레그램 답 기록
+    if ((m = /^\/api\/sessions\/([^/]+)\/replies$/.exec(p)) && method === 'GET') {
+      if ((g = guard('active'))) return g;
+      var rpid = decodeURIComponent(m[1]);
+      if (!sessionById(rpid)) return notFound();
+      return J(200, { replies: clone((replyRecs[rpid] || []).slice(-200)) });
+    }
+
+    // 공유: 만들기·목록(소유자만), 취소
+    if ((m = /^\/api\/sessions\/([^/]+)\/shares$/.exec(p))) {
+      if ((g = guard('active'))) return g;
+      var shid = decodeURIComponent(m[1]);
+      var shs = sessionById(shid);
+      if (!shs || shs.sharedBy || shs.ownerId) return notFound();
+      var list = shares[shid] = shares[shid] || [];
+      if (method === 'GET') return J(200, { shares: clone(list) });
+      if (method === 'POST') {
+        var sb = body || {};
+        shareSeq += 1;
+        var created = { id: 'sh-' + shareSeq, kind: sb.kind, url: null, email: null, expiresAt: null, createdAt: nowIso() };
+        if (sb.kind === 'link') {
+          var hours = { '1h': 1, '1d': 24, '7d': 24 * 7, never: 0 }[sb.expiresIn];
+          if (hours === undefined) return J(400, { error: 'invalid_body' });
+          created.expiresAt = hours ? iso(Date.now() + hours * 60 * MIN) : null;
+          var token = 'demo' + shareSeq + '_' + shs.name.replace(/[^A-Za-z0-9-]/g, '');
+          publicLinks[token] = { sessionId: shid, shareId: created.id, expiresAt: created.expiresAt };
+          list.unshift(created);
+          // 주소는 만들 때 한 번만 내려 준다(데모에서는 이 데모 페이지 안의 공개 보기 주소).
+          var out = clone(created);
+          out.url = new URL('app.html?view=' + encodeURIComponent('/s/' + token), BASE).href;
+          return J(200, out);
+        }
+        if (sb.kind === 'user') {
+          var em = String(sb.email || '').trim().toLowerCase();
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)) return J(400, { error: 'invalid_body' });
+          if (em === me().email) return J(409, { error: 'self' });
+          var to = USERS.filter(function (x) { return x.email === em && !x.invited && !x.deleteAt; })[0];
+          if (!to) return J(409, { error: 'user_not_found' });
+          created.email = em;
+          list.unshift(created);
+          return J(200, clone(created));
+        }
+        return J(400, { error: 'invalid_body' });
+      }
+    }
+    if ((m = /^\/api\/shares\/([^/]+)$/.exec(p)) && method === 'DELETE') {
+      if ((g = guard('active'))) return g;
+      var del = decodeURIComponent(m[1]);
+      var found = false;
+      Object.keys(shares).forEach(function (k) {
+        var before2 = shares[k].length;
+        shares[k] = shares[k].filter(function (x) { return x.id !== del; });
+        if (shares[k].length !== before2) found = true;
+      });
+      Object.keys(publicLinks).forEach(function (t) {
+        if (publicLinks[t].shareId === del) { delete publicLinks[t]; revokedTokens[t] = true; }
+      });
+      return found ? J(200, { ok: true }) : notFound();
+    }
+
+    // 공개 링크(로그인 없이, 토큰으로만)
+    if ((m = /^\/api\/public\/s\/([^/]+)$/.exec(p)) && method === 'GET') {
+      var pv = publicView(decodeURIComponent(m[1]));
+      return pv ? J(200, pv) : notFound();
+    }
+    if ((m = /^\/api\/public\/s\/([^/]+)\/log$/.exec(p)) && method === 'GET') {
+      var ptoken = decodeURIComponent(m[1]);
+      if (!publicView(ptoken)) return notFound();
+      var pg = pageOf(logs[publicLinks[ptoken].sessionId] || [], url.searchParams);
+      return pg ? J(200, pg) : J(400, { error: 'invalid_query' });
+    }
+
+    // 계정: 동의·탈퇴·복구·저장 용량
+    if (p === '/api/me/consent' && method === 'POST') {
+      if ((g = guard('any'))) return g;
+      var cu = me();
+      if (!cu.consentedAt) cu.consentedAt = nowIso();
+      return J(200, { user: userView(cu) });
+    }
+    if (p === '/api/me/withdraw' && method === 'POST') {
+      if ((g = guard('active'))) return g;
+      var wu = me();
+      wu.deleteAt = iso(Date.now() + 7 * DAY * MIN);
+      streams.slice().forEach(function (es) { if (!es._public) es.close(); });
+      return J(200, { user: userView(wu) });
+    }
+    if (p === '/api/me/restore' && method === 'POST') {
+      if ((g = guard('any'))) return g;
+      var ru = me();
+      if (ru.deleteAt && Date.parse(ru.deleteAt) <= Date.now()) return J(409, { error: 'expired' });
+      ru.deleteAt = null;
+      return J(200, { user: userView(ru) });
+    }
+    if (p === '/api/me/storage' && method === 'GET') {
+      if ((g = guard('active'))) return g;
+      var su = me();
+      return J(200, { bytes: USAGE[su.id] || 0, quotaMb: su.quotaMb, trimmedAt: su.id === 'u-member' ? ago(60 * 20) : null });
+    }
+
+    // 웹 푸시(데모 브라우저는 지원하지 않는다. 목록·해제만 흉내 낸다)
+    if (p === '/api/push/key' && method === 'GET') {
+      if ((g = guard('active'))) return g;
+      return J(200, { publicKey: 'BDemoKeyOnlyForTheMockupDoesNotWork' });
+    }
+    if (p === '/api/push/subscriptions' && method === 'GET') {
+      if ((g = guard('active'))) return g;
+      return J(200, { subscriptions: clone(pushSubs) });
+    }
+    if (p === '/api/push/subscribe') {
+      if ((g = guard('active'))) return g;
+      var ep = body && typeof body.endpoint === 'string' ? body.endpoint : '';
+      if (!ep) return J(400, { error: 'invalid_body' });
+      pushSubs = pushSubs.filter(function (x) { return x.endpoint !== ep; });
+      if (method === 'POST') pushSubs.push({ endpoint: ep, label: body.label || null, createdAt: nowIso() });
+      return J(200, { ok: true });
+    }
+    if (p === '/api/push/test' && method === 'POST') {
+      if ((g = guard('active'))) return g;
+      var tep = body && body.endpoint;
+      return pushSubs.some(function (x) { return x.endpoint === tep; }) ? J(200, { ok: true }) : notFound();
+    }
+
+    // 관리자: 사용자 추가·바꾸기·복구·즉시 삭제
+    if (p === '/api/admin/users' && method === 'POST') {
+      if ((g = guard('admin'))) return g;
+      var ne = String((body && body.email) || '').trim().toLowerCase();
+      var nr = body && body.role;
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(ne) || (nr !== 'admin' && nr !== 'user')) return J(400, { error: 'invalid_body' });
+      if (USERS.some(function (x) { return x.email === ne; })) return J(409, { error: 'exists' });
+      var nu = { id: 'u-add-' + (USERS.length + 1), email: ne, name: null, role: nr, status: 'active', createdAt: nowIso(),
+        consentedAt: null, deleteAt: null, lastLoginAt: null, quotaMb: 1024, invited: true };
+      USERS.push(nu);
+      USAGE[nu.id] = 0;
+      return J(200, adminUserView(nu));
+    }
+    if ((m = /^\/api\/admin\/users\/([^/]+)$/.exec(p)) && (method === 'PATCH' || method === 'DELETE')) {
+      if ((g = guard('admin'))) return g;
+      var aid = decodeURIComponent(m[1]);
+      var au = USERS.filter(function (x) { return x.id === aid; })[0];
+      if (!au) return notFound();
+      if (method === 'DELETE') {
+        if (aid === meId) return J(400, { error: 'self' });
+        USERS = USERS.filter(function (x) { return x.id !== aid; });
+        delete OTHER_MACHINES[aid];
+        otherSessions = otherSessions.filter(function (x) { return x.ownerId !== aid; });
+        return J(200, { ok: true });
+      }
+      var pb2 = body || {};
+      if (pb2.role !== undefined) {
+        if (pb2.role !== 'admin' && pb2.role !== 'user') return J(400, { error: 'invalid_body' });
+        if (aid === meId && pb2.role !== 'admin') return J(400, { error: 'self' });
+        au.role = pb2.role;
+      }
+      if (pb2.quotaMb !== undefined) {
+        if (!isInt(pb2.quotaMb, 0, 1000000)) return J(400, { error: 'invalid_body' });
+        au.quotaMb = pb2.quotaMb;
+      }
+      return J(200, adminUserView(au));
+    }
+    if ((m = /^\/api\/admin\/users\/([^/]+)\/restore$/.exec(p)) && method === 'POST') {
+      if ((g = guard('admin'))) return g;
+      var rsu = USERS.filter(function (x) { return x.id === decodeURIComponent(m[1]); })[0];
+      if (!rsu) return notFound();
+      rsu.deleteAt = null;
+      return J(200, adminUserView(rsu));
+    }
+
+    // 관리자: 모든 컴퓨터
+    if (p === '/api/admin/machines' && method === 'GET') {
+      if ((g = guard('admin'))) return g;
+      var all2 = machines.map(function (x) {
+        return Object.assign(clone(x), { ownerId: meId, ownerEmail: me().email, account: ACC_A });
+      });
+      Object.keys(OTHER_MACHINES).forEach(function (uid) {
+        var owner = USERS.filter(function (x) { return x.id === uid; })[0];
+        if (!owner) return;
+        OTHER_MACHINES[uid].forEach(function (x) {
+          all2.push(Object.assign(clone(x), { ownerId: uid, ownerEmail: owner.email, account: OTHER_ACCOUNTS[uid] || null }));
+        });
+      });
+      return J(200, { machines: all2 });
+    }
+    if ((m = /^\/api\/admin\/machines\/([^/]+)$/.exec(p)) && (method === 'PATCH' || method === 'DELETE')) {
+      if ((g = guard('admin'))) return g;
+      var amid = decodeURIComponent(m[1]);
+      var mine = machines.filter(function (x) { return x.id === amid; })[0];
+      var ownerUid = mine ? meId : Object.keys(OTHER_MACHINES).filter(function (uid) {
+        return OTHER_MACHINES[uid].some(function (x) { return x.id === amid; });
+      })[0];
+      if (!ownerUid) return notFound();
+      var am = mine || OTHER_MACHINES[ownerUid].filter(function (x) { return x.id === amid; })[0];
+      var ownerU = USERS.filter(function (x) { return x.id === ownerUid; })[0];
+      if (method === 'DELETE') {
+        if (mine) {
+          machines = machines.filter(function (x) { return x.id !== amid; });
+          publish(Object.assign({ type: 'snapshot' }, snapshot(false)));
+        } else {
+          OTHER_MACHINES[ownerUid] = OTHER_MACHINES[ownerUid].filter(function (x) { return x.id !== amid; });
+        }
+        return J(200, { ok: true });
+      }
+      if (!body || typeof body.remoteReply !== 'boolean') return J(400, { error: 'invalid_body' });
+      am.remoteReply = body.remoteReply;
+      if (mine) {
+        publish({ type: 'machine', machine: clone(am) });
+        sessions.forEach(function (x) { if (x.machineId === amid && visibleSessions(false).indexOf(x) >= 0) publishSession(x); });
+      }
+      return J(200, Object.assign(clone(am), { ownerId: ownerUid, ownerEmail: ownerU ? ownerU.email : '', account: mine ? ACC_A : (OTHER_ACCOUNTS[ownerUid] || null) }));
+    }
+
+    // 관리자: 저장 용량
+    if (p === '/api/admin/storage' && method === 'GET') {
+      if ((g = guard('admin'))) return g;
+      var users2 = USERS.filter(function (x) { return !x.invited; }).map(function (x) {
+        return { id: x.id, email: x.email, bytes: USAGE[x.id] || 0, quotaMb: x.quotaMb };
+      });
+      var chat = users2.reduce(function (a, x) { return a + x.bytes; }, 0);
+      var usage = 3 * MB;
+      var other = 3 * MB;
+      return J(200, {
+        totalBytes: chat + usage + other, chatBytes: chat, usageBytes: usage, otherBytes: other,
+        diskFreeBytes: 29 * 1024 * MB, users: users2,
+      });
     }
 
     if (p === '/api/device/lookup' && method === 'GET') {
@@ -1049,6 +1512,8 @@
   }, true);
 
   // ── 주소 바꾸기와 앱 불러오기 ──────────────────────────
+  // 데모에서는 서비스 워커·푸시를 쓰지 않는다(설정 › 알림에 "지원하지 않습니다" 안내가 보인다).
+  try { Object.defineProperty(window, 'PushManager', { value: undefined, configurable: true, writable: true }); } catch (e) { /* 무시 */ }
   history.replaceState(null, '', startView);
 
   var assets = window.__CMON_DEMO_ASSETS__ || { css: [], js: [] };

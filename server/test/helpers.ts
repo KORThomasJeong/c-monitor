@@ -7,6 +7,7 @@ import type { HookEvent, HookEventName, IngestBatch, StreamMessage, TranscriptLi
 import { createApp } from '../src/app';
 import { migrate } from '../src/db/index';
 import { createTelegramHub } from '../src/notify/hub';
+import { createPushHub, type PushSender } from '../src/notify/push';
 import { createReplyHub } from '../src/reply/hub';
 import { createBus } from '../src/stream/bus';
 import type { Config, Deps, GoogleClient } from '../src/types';
@@ -83,6 +84,11 @@ export function makeHarness(db: TestDb, overrides: Partial<Deps> = {}, configOve
     // 텔레그램은 기본으로 꺼 둔다. 실제 네트워크로 나가지 않도록 클라이언트 만들기는 막아 둔다.
     telegram: createTelegramHub(),
     telegramClient: () => { throw new Error('테스트에서는 가짜 텔레그램 클라이언트를 넣어야 합니다'); },
+    // 웹 푸시도 실제 푸시 서비스로 나가지 않도록 보내기를 막아 둔다(구독이 있을 때만 불린다).
+    push: createPushHub({
+      sender: async () => { throw new Error('테스트에서는 가짜 웹 푸시 sender를 넣어야 합니다'); },
+      waitGraceMs: 0,
+    }),
     ...overrides,
   };
   const app = createApp(deps);
@@ -170,6 +176,27 @@ export function makeHarness(db: TestDb, overrides: Partial<Deps> = {}, configOve
   return {
     app, bus, deps, clock, published, req, login, userId, activeUser, connect, ev, line, batch, ingest, cookieFrom,
     advance(ms: number) { clock.now = new Date(clock.now.getTime() + ms); },
+  };
+}
+
+/** 가짜 웹 푸시 sender: 보낸 것을 적어 두고, endpoint별로 돌려줄 상태 코드를 정할 수 있다(기본 201). */
+export function fakePush() {
+  const sent: { endpoint: string; payload: { title: string; body: string; url: string; tag: string } }[] = [];
+  const statusOf = new Map<string, number>();
+  const sender: PushSender = async (sub, payload) => {
+    const code = statusOf.get(sub.endpoint) ?? 201;
+    sent.push({ endpoint: sub.endpoint, payload: JSON.parse(payload) });
+    return { statusCode: code };
+  };
+  return {
+    sender, sent, statusOf,
+    /** 그 endpoint로 간 것(지금까지 쌓인 것을 비우고 돌려준다). */
+    take(endpoint?: string) {
+      const out = sent.filter((m) => endpoint === undefined || m.endpoint === endpoint);
+      sent.splice(0, sent.length, ...sent.filter((m) => !out.includes(m)));
+      return out;
+    },
+    clear() { sent.length = 0; },
   };
 }
 

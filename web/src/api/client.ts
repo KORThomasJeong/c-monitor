@@ -1,7 +1,10 @@
 // 서버 API 호출. 쿠키 로그인 기준이며 401·403(pending)은 알맞은 화면으로 보낸다.
 import {
   API,
+  type AdminMachineView,
+  type AdminStorageView,
   type AdminTelegramView,
+  type AdminUserView,
   SEARCH_LIMIT,
   type DashboardSnapshot,
   type LogResponse,
@@ -10,12 +13,15 @@ import {
   type MeResponse,
   type NotifySettings,
   type NotifyView,
+  type PublicSessionView,
+  type ReplyRecord,
   type ReplyRequest,
   type ReplyResponse,
   type SessionView,
   type SettingsView,
+  type ShareView,
+  type StorageMe,
   type TelegramLinkResponse,
-  type UserView,
 } from '@c-monitor/shared';
 import { navigate } from '../router';
 
@@ -44,6 +50,15 @@ function toLogin() {
   navigate(`/login${nextQuery()}`, { replace: true });
 }
 
+/** 탈퇴 중인 계정(403 withdrawn): "탈퇴 취소" 화면으로 보낸다. */
+function toWithdrawn() {
+  if (window.location.pathname === '/withdrawn') return;
+  navigate('/withdrawn', { replace: true });
+}
+
+const hasError = (body: unknown, code: string) =>
+  !!body && typeof body === 'object' && (body as Record<string, unknown>).error === code;
+
 function toPending() {
   if (window.location.pathname === '/pending') return;
   navigate(`/pending${nextQuery()}`, { replace: true });
@@ -64,6 +79,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   if (!res.ok) {
     if (res.status === 401) toLogin();
     else if (res.status === 403 && isPendingBody(data)) toPending();
+    else if (res.status === 403 && hasError(data, 'withdrawn')) toWithdrawn();
     throw new ApiError(res.status, data);
   }
   return data as T;
@@ -74,6 +90,55 @@ const sessionPath = (id: string) => `${API.sessions}/${enc(id)}`;
 
 export const getMe = () => request<MeResponse>('GET', API.me);
 export const getDashboard = () => request<DashboardSnapshot>('GET', API.sessions);
+
+/** 기록 탭: 종료된 세션까지 모두. 관리자가 남의 것을 볼 때는 userId를 준다. */
+export const getHistory = (userId?: string) =>
+  request<DashboardSnapshot>('GET', `${API.sessions}?history=1${userId ? `&user=${enc(userId)}` : ''}`);
+
+/** 웹·텔레그램에서 답한 기록(오래된 순, 최근 200개). */
+export async function getReplies(sessionId: string): Promise<ReplyRecord[]> {
+  const data = await request<{ replies: ReplyRecord[] } | undefined>('GET', `${sessionPath(sessionId)}/replies`);
+  return Array.isArray(data?.replies) ? data.replies : [];
+}
+
+// ── 공유 ── 계약 "공유" 절. 링크 url은 만들 때 한 번만 내려온다.
+export type ShareCreate = { kind: 'link'; expiresIn: '1h' | '1d' | '7d' | 'never' } | { kind: 'user'; email: string };
+/** 409 user_not_found = 가입하지 않은 이메일, 409 self = 자기 자신. */
+export const createShare = (sessionId: string, body: ShareCreate) =>
+  request<ShareView>('POST', `${sessionPath(sessionId)}/shares`, body);
+export async function getShares(sessionId: string): Promise<ShareView[]> {
+  const data = await request<{ shares: ShareView[] } | undefined>('GET', `${sessionPath(sessionId)}/shares`);
+  return Array.isArray(data?.shares) ? data.shares : [];
+}
+export const deleteShare = (id: string) => request<{ ok: true }>('DELETE', `/api/shares/${enc(id)}`);
+
+// 로그인 없이 보는 공유 링크(토큰으로만). 만료·취소·삭제면 404.
+const publicPath = (token: string) => `/api/public/s/${enc(token)}`;
+export const getPublicSession = (token: string) => request<PublicSessionView>('GET', publicPath(token));
+export function getPublicLog(token: string, cursor?: LogCursor) {
+  const q = cursor ? `?${Object.entries(cursor).map(([k, v]) => `${k}=${v}`).join('&')}` : '';
+  return request<LogResponse>('GET', `${publicPath(token)}/log${q}`);
+}
+export const publicStreamUrl = (token: string) => `${publicPath(token)}/stream`;
+
+// ── 계정: 동의·탈퇴·저장 용량 ──
+export const consent = () => request<MeResponse>('POST', `${API.me}/consent`);
+export const withdraw = () => request<MeResponse>('POST', `${API.me}/withdraw`);
+export const restoreMe = () => request<MeResponse>('POST', `${API.me}/restore`);
+export const getMyStorage = () => request<StorageMe>('GET', `${API.me}/storage`);
+
+// ── 웹 푸시 ── 계약 "웹 푸시" 절.
+export type PushSubscriptionInfo = { endpoint: string; label: string | null; createdAt: string };
+export const getPushKey = () => request<{ publicKey: string }>('GET', '/api/push/key');
+export async function getPushSubscriptions(): Promise<PushSubscriptionInfo[]> {
+  const data = await request<{ subscriptions: PushSubscriptionInfo[] } | undefined>('GET', '/api/push/subscriptions');
+  return Array.isArray(data?.subscriptions) ? data.subscriptions : [];
+}
+export const pushSubscribe = (body: { endpoint: string; keys: { p256dh: string; auth: string }; label?: string }) =>
+  request<{ ok: true }>('POST', '/api/push/subscribe', body);
+export const pushUnsubscribe = (endpoint: string) => request<{ ok: true }>('DELETE', '/api/push/subscribe', { endpoint });
+/** 404 = 서버에 없는 구독(만료돼 지워짐 등). */
+export const pushTest = (endpoint: string) => request<{ ok: true }>('POST', '/api/push/test', { endpoint });
 
 /** 대화 한 쪽(기본 100줄). 기준을 주지 않으면 가장 최근 줄들. */
 export type LogCursor = { before: number } | { after: number } | { around: number };
@@ -164,10 +229,26 @@ export function replyErrorText(e: unknown): string {
 }
 
 /** 서버가 배열이나 {users: [...]} 어느 쪽으로 줘도 배열로 돌려준다. */
-export async function getAdminUsers(): Promise<UserView[]> {
-  const data = await request<UserView[] | { users: UserView[] }>('GET', API.adminUsers);
+export async function getAdminUsers(): Promise<AdminUserView[]> {
+  const data = await request<AdminUserView[] | { users: AdminUserView[] }>('GET', API.adminUsers);
   return Array.isArray(data) ? data : (data?.users ?? []);
 }
+/** 미리 추가: 그 사람은 첫 로그인 때 승인 없이 쓴다(동의는 받는다). */
+export const createAdminUser = (email: string, role: 'admin' | 'user') =>
+  request<AdminUserView>('POST', API.adminUsers, { email, role });
+/** 권한·용량 한도(0 = 무제한). */
+export const patchAdminUser = (id: string, patch: { role?: 'admin' | 'user'; quotaMb?: number }) =>
+  request<AdminUserView>('PATCH', `${API.adminUsers}/${enc(id)}`, patch);
+export const restoreAdminUser = (id: string) => request<AdminUserView>('POST', `${API.adminUsers}/${enc(id)}/restore`);
+export const deleteAdminUser = (id: string) => request<{ ok: true }>('DELETE', `${API.adminUsers}/${enc(id)}`);
+export async function getAdminMachines(): Promise<AdminMachineView[]> {
+  const data = await request<{ machines: AdminMachineView[] } | undefined>('GET', '/api/admin/machines');
+  return Array.isArray(data?.machines) ? data.machines : [];
+}
+export const patchAdminMachine = (id: string, patch: { remoteReply: boolean }) =>
+  request<AdminMachineView>('PATCH', `/api/admin/machines/${enc(id)}`, patch);
+export const deleteAdminMachine = (id: string) => request<{ ok: true }>('DELETE', `/api/admin/machines/${enc(id)}`);
+export const getAdminStorage = () => request<AdminStorageView>('GET', '/api/admin/storage');
 export const approveUser = (id: string) => request<void>('POST', `${API.adminUsers}/${enc(id)}/approve`);
 export const suspendUser = (id: string) => request<void>('POST', `${API.adminUsers}/${enc(id)}/suspend`);
 

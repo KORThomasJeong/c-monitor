@@ -6,6 +6,8 @@ import * as api from '../api/client';
 import { ClockIcon } from '../components/Icons';
 import { useTheme } from '../lib/prefs';
 import { Link, navigate, useLocation } from '../router';
+import type { MeResponse } from '@c-monitor/shared';
+import { Consent } from './Account';
 import { safeNext } from './Login';
 
 /** 승인됐는지 저절로 다시 확인하는 간격 */
@@ -17,6 +19,21 @@ export function Pending() {
   const raw = safeNext(search.get('next'));
   const next = raw && !raw.startsWith('/pending') && !raw.startsWith('/login') ? raw : null;
   const [note, setNote] = useState('');
+  /** 아직 가입 고지에 동의하지 않았으면 동의 화면을 먼저 보인다(동의해야 관리자에게 신청이 간다). */
+  const [needConsent, setNeedConsent] = useState<MeResponse | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    Promise.resolve()
+      .then(() => api.getMe())
+      .then((me) => {
+        if (!live || !me?.user) return;
+        if (me.user.deleteAt) navigate('/withdrawn', { replace: true });
+        else if (!me.user.consentedAt) setNeedConsent(me);
+      })
+      .catch(() => { /* 화면은 그대로 두고 다음 확인에 맡긴다 */ });
+    return () => { live = false; };
+  }, []); // 처음 한 번만(승인 여부는 아래 주기적 확인이 본다)
 
   const check = useCallback(async (quiet: boolean) => {
     if (!quiet) setNote('');
@@ -40,6 +57,18 @@ export function Pending() {
       navigate(next ? `/login?next=${encodeURIComponent(next)}` : '/login', { replace: true });
     }
   };
+
+  if (needConsent) {
+    return (
+      <Consent
+        me={needConsent}
+        onDone={(me) => {
+          setNeedConsent(null);
+          if (me.user.status === 'active') navigate(next ?? '/', { replace: true });
+        }}
+      />
+    );
+  }
 
   return (
     <div className={`app ${theme.cls}`}>

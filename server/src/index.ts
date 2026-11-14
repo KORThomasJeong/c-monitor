@@ -9,6 +9,7 @@ import { connect, migrate } from './db/index';
 import { runCleanup } from './jobs/cleanup';
 import { runLostCheck } from './jobs/lost';
 import { createTelegramHub } from './notify/hub';
+import { createPushHub, vapidKeys } from './notify/push';
 import { startBotFromDb } from './notify/store';
 import { createTelegramClient } from './notify/telegram';
 import { createReplyHub } from './reply/hub';
@@ -45,11 +46,14 @@ async function main(): Promise<void> {
     reply: createReplyHub(),
     telegram: createTelegramHub(),
     telegramClient: (token) => createTelegramClient(token),
+    push: createPushHub(),
     webDist: existsSync(webDist) ? webDist : undefined,
   };
   const app = createApp(deps);
   // 관리자가 넣어 둔 봇 토큰이 있으면 텔레그램 받기 루프를 시작한다.
   if (await startBotFromDb(deps)) console.log(`[telegram] 봇 @${deps.telegram.bot?.username} 받기 시작`);
+  // 웹 푸시 VAPID 키: 없으면 이때 만들어 DB에 둔다.
+  await vapidKeys(deps);
 
   const guard = (name: string, job: () => Promise<unknown>) => () => {
     job().catch((err) => console.error(`[jobs] ${name} 실패:`, err));

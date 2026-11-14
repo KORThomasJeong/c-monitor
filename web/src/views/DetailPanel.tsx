@@ -7,20 +7,21 @@ import {
   type LogLine,
   type LogSearchResponse,
   type MachineView,
+  type ReplyRecord,
   type SessionView,
 } from '@c-monitor/shared';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import {
-  AlertIcon, ArrowDownIcon, BackIcon, BellIcon, BellOffIcon, CheckCircleIcon, ChevronDownIcon, ChevronUpIcon, ClockIcon, CloseIcon, LockIcon,
-  ExternalIcon, InfoIcon, PanelIcon, PowerIcon, SearchIcon, TerminalIcon, TrashIcon,
+  AlertIcon, ArrowDownIcon, BackIcon, BellIcon, BellOffIcon, CheckCircleIcon, CheckIcon, ChevronDownIcon, ChevronUpIcon, ClockIcon, CloseIcon, LockIcon,
+  ExternalIcon, InfoIcon, PanelIcon, PowerIcon, SearchIcon, ShareIcon, TerminalIcon, TrashIcon,
 } from '../components/Icons';
 import { Composer, PendingReply } from '../components/Reply';
 import { canAnswer } from '../components/SessionCard';
 import { isClosed, replyBlockReason, safeRemoteUrl } from '../lib/reply';
 import type { ReplyCtl } from '../state/reply';
 import { Link } from '../router';
-import { formatClock, formatDuration, formatTime } from '../lib/format';
-import { canDelete, splitMatches, statusLabel, TAG_COLOR, toolText } from '../lib/view';
+import { formatAgo, formatClock, formatDuration, formatTime, formatUsd } from '../lib/format';
+import { canDelete, ctxText, interleave, level, replyText, splitMatches, statusLabel, TAG_COLOR, toolText } from '../lib/view';
 import type { LogWindow } from '../state/store';
 
 export type Tab = 'chat' | 'tool';
@@ -31,7 +32,8 @@ type Props = {
   log: LogWindow | undefined;
   tab: Tab;
   onTab: (t: Tab) => void;
-  onClose: () => void;
+  /** 없으면 닫기·목록으로 버튼을 그리지 않는다(공개 링크) */
+  onClose?: () => void;
   connected: boolean;
   now: number;
   onLoadOlder?: () => Promise<void>;
@@ -41,26 +43,34 @@ type Props = {
   onDelete?: () => void;
   /** 원격 답장. 없으면 답 버튼·입력창을 그리지 않는다. */
   reply?: ReplyCtl;
-  /** 세션별 텔레그램 알림 스위치. 없거나 서버에 봇이 없으면 그리지 않는다. */
-  telegram?: TelegramCtl;
+  /** 세션별 알림 스위치(텔레그램·웹 공통). 없으면 그리지 않는다. */
+  notify?: NotifyCtl;
+  /** 보기만(공유받은 세션·관리자가 남의 대시보드·공개 링크·기록). 원격 제어 링크·안내도 숨긴다. */
+  readOnly?: boolean;
+  /** 입력창 자리에 보일 한 줄(보기만일 때의 까닭 등) */
+  notice?: string | null;
+  /** 있으면 머리에 "공유" 버튼 */
+  onShare?: () => void;
+  /** 웹·텔레그램 답 기록(대화 줄 사이에 시각 순으로 끼운다) */
+  replies?: ReplyRecord[];
+  /** 공개 링크 보기: 컴퓨터·계정·폴더 대신 만료 시각을 보인다 */
+  publicInfo?: { expiresAt: string | null };
 };
 
-export type TelegramCtl = {
-  /** 서버에 봇이 있는가 */
-  available: boolean;
-  /** 내가 텔레그램을 연결했는가. 아니면 스위치를 막고 안내한다. */
-  linked: boolean;
+export type NotifyCtl = {
+  /** 텔레그램을 연결했거나 웹 알림을 켠 브라우저가 있는가. 아니면 스위치를 막고 안내한다. */
+  enabled: boolean;
   onToggle: (sessionId: string, on: boolean) => void;
 };
 
-/** 상세 머리의 "텔레그램 알림" 스위치. 공유받은 세션에는 그리지 않는다(소유자만 바꿀 수 있다). */
-function TelegramSwitch({ s, ctl }: { s: SessionView; ctl: TelegramCtl }) {
-  const id = `tg-${s.id}`;
-  const on = ctl.linked && s.telegram;
+/** 상세 머리의 "알림" 스위치(텔레그램·웹 알림 둘 다). 내 세션에만 그린다(소유자만 바꿀 수 있다). */
+function NotifySwitch({ s, ctl }: { s: SessionView; ctl: NotifyCtl }) {
+  const id = `nt-${s.id}`;
+  const on = ctl.enabled && s.telegram;
   return (
     <span className="tg-sw">
-      <label htmlFor={id} className="tg-sw-label">
-        {on ? <BellIcon size={14} /> : <BellOffIcon size={14} />}텔레그램 알림
+      <label htmlFor={id} className="tg-sw-label" title="텔레그램·웹 알림 둘 다">
+        {on ? <BellIcon size={14} /> : <BellOffIcon size={14} />}알림
       </label>
       <input
         id={id}
@@ -68,16 +78,27 @@ function TelegramSwitch({ s, ctl }: { s: SessionView; ctl: TelegramCtl }) {
         type="checkbox"
         role="switch"
         checked={on}
-        disabled={!ctl.linked}
-        aria-describedby={ctl.linked ? undefined : `${id}-hint`}
+        disabled={!ctl.enabled}
+        aria-describedby={`${id}-hint`}
         onChange={(e) => ctl.onToggle(s.id, e.target.checked)}
       />
-      {!ctl.linked && (
+      {ctl.enabled ? (
+        <span className="visually-hidden" id={`${id}-hint`}>텔레그램·웹 알림 둘 다에 적용됩니다</span>
+      ) : (
         <span className="remote-hint" id={`${id}-hint`}>
-          <Link to="/settings#notify">설정 › 알림</Link>에서 텔레그램을 연결하면 켤 수 있습니다
+          <Link to="/settings#notify">설정 › 알림</Link>에서 텔레그램을 연결하거나 웹 알림을 켜면 쓸 수 있습니다
         </span>
       )}
     </span>
+  );
+}
+
+/** 답 기록 한 줄(대화 사이에 끼운다). */
+function ReplyNote({ r, now }: { r: ReplyRecord; now: number }) {
+  return (
+    <div className="ln reply-note" data-reply={r.id}>
+      <span className="sent"><CheckIcon size={14} />{replyText(r)} · {formatAgo(r.at, now)}</span>
+    </div>
   );
 }
 
@@ -141,15 +162,19 @@ function Line({ line, q, hit }: { line: LogLine; q: string; hit: boolean }) {
   );
 }
 
-/** 대화 맨 아래 상태 상자. */
-function StatusBox({ s, now }: { s: SessionView; now: number }) {
+type StatusFields = Pick<SessionView, 'status' | 'activity' | 'lastEventAt' | 'endedAt'>;
+
+/** 대화 맨 아래 상태 상자. 보기만일 때는 "터미널에서 답해 주세요" 대신 주인이 답한다고 알린다. */
+export function StatusBox({ s, now, readOnly = false }: { s: StatusFields; now: number; readOnly?: boolean }) {
   switch (s.status) {
     case 'wait':
       return (
         <div className="ask">
           <div className="ask-title"><AlertIcon size={16} />{s.activity?.label || '답변을 기다립니다'}</div>
           {s.activity?.text && <div className="code">{s.activity.text}</div>}
-          <div className="ask-note"><TerminalIcon size={14} />해당 컴퓨터의 터미널에서 답해 주세요.</div>
+          <div className="ask-note">
+            <TerminalIcon size={14} />{readOnly ? '세션 주인이 답하면 이어서 진행됩니다.' : '해당 컴퓨터의 터미널에서 답해 주세요.'}
+          </div>
         </div>
       );
     case 'limit':
@@ -157,7 +182,9 @@ function StatusBox({ s, now }: { s: SessionView; now: number }) {
         <div className="ask">
           <div className="ask-title"><AlertIcon size={16} />사용 한도에 도달했습니다</div>
           {s.activity?.text && <div className="code">{s.activity.text}</div>}
-          <div className="ask-note"><TerminalIcon size={14} />한도가 초기화되면 해당 컴퓨터의 터미널에서 이어 가 주세요.</div>
+          <div className="ask-note">
+            <TerminalIcon size={14} />{readOnly ? '한도가 초기화되면 이어서 진행됩니다.' : '한도가 초기화되면 해당 컴퓨터의 터미널에서 이어 가 주세요.'}
+          </div>
         </div>
       );
     case 'done':
@@ -239,7 +266,7 @@ function useFitHeight(ref: { current: HTMLElement | null }) {
 
 export function DetailPanel(props: Props) {
   const { session: s, machine, log, tab, onTab, onClose, connected, now } = props;
-  const { onLoadOlder, onJump, onLatest, onSearch, onDelete, reply, telegram } = props;
+  const { onLoadOlder, onJump, onLatest, onSearch, onDelete, reply, notify, readOnly = false, notice, onShare, replies, publicInfo } = props;
   const logRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   useFitHeight(panelRef);
@@ -420,14 +447,24 @@ export function DetailPanel(props: Props) {
   const tools = all.filter((l) => l.role === 'tool');
   const shown = tab === 'tool' ? tools : all;
   const label = statusLabel(s.status);
-  const kv: [string, string][] = [
-    ['클로드 계정', s.account ?? '—'],
-    ['컴퓨터', machine?.name ?? '—'],
-    ['폴더', s.cwd],
-    ['브랜치', s.branch ?? '—'],
-    ['모델', s.model ?? '—'],
-    ['시작', formatClock(s.startedAt, now)],
-  ];
+  const kv: [string, string][] = publicInfo
+    ? [
+      ['브랜치', s.branch ?? '—'],
+      ['모델', s.model ?? '—'],
+      ['시작', formatClock(s.startedAt, now)],
+      ['링크 만료', publicInfo.expiresAt ? formatClock(publicInfo.expiresAt, now) : '없음'],
+    ]
+    : [
+      ['클로드 계정', s.account ?? '—'],
+      ['컴퓨터', machine?.name ?? '—'],
+      ['폴더', s.cwd],
+      ['브랜치', s.branch ?? '—'],
+      ['모델', s.model ?? '—'],
+      ['시작', formatClock(s.startedAt, now)],
+      ...(s.sharedBy ? [['공유한 사람', s.sharedBy] as [string, string]] : []),
+    ];
+  const ctx = ctxText(s.contextPct);
+  const cost = s.costUsd == null ? null : formatUsd(s.costUsd);
   const quiet = s.status === 'end' || s.status === 'lost';
   const foot = s.status === 'end'
     ? '종료된 세션입니다 · 기록만 볼 수 있습니다'
@@ -438,35 +475,58 @@ export function DetailPanel(props: Props) {
   const loading = !log || (log.loading && all.length === 0);
   const partial = !!log && !log.loading && (log.hasMoreBefore || log.hasMoreAfter);
   const tabTitle = complete ? undefined : '불러온 대화만 셉니다';
-  // 원격 답장
-  const answerable = !!reply && canAnswer(s);
+  // 원격 답장(보기만이면 답 버튼·입력창·원격 제어·알림 스위치·공유를 모두 숨긴다)
+  const rw = !readOnly && !s.sharedBy;
+  const answerable = rw && !!reply && canAnswer(s);
   const multiQ = s.pending?.kind === 'question' && (s.pending.questions?.length ?? 0) > 1;
-  const composer = !!reply && s.canReply && !isClosed(s) && !(answerable && multiQ);
-  const blocked = reply ? replyBlockReason(s, machine) : null;
-  const remoteUrl = safeRemoteUrl(s.remoteUrl);
-  const remoteHint = !remoteUrl && !isClosed(s) && !s.sharedBy;
-  const tgSwitch = !!telegram?.available && !s.sharedBy;
+  const composer = rw && !!reply && s.canReply && !isClosed(s) && !(answerable && multiQ);
+  const blocked = rw && reply ? replyBlockReason(s, machine) : null;
+  const remoteUrl = rw ? safeRemoteUrl(s.remoteUrl) : null;
+  const remoteHint = rw && !remoteUrl && !isClosed(s);
+  const ntSwitch = rw && !!notify;
+  const share = rw && !!onShare;
+  const items = tab === 'chat'
+    ? interleave(shown, replies, { hasMoreBefore: !!log?.hasMoreBefore, hasMoreAfter: !!log?.hasMoreAfter })
+    : shown.map((line) => ({ kind: 'line' as const, line }));
+  const note = notice ?? (!rw && !publicInfo && s.sharedBy ? '공유받은 세션은 보기만 할 수 있습니다.' : null);
 
   return (
     <aside className="panel" aria-label="세션 상세" ref={panelRef}>
       <div className="p-head">
         <div className="p-top">
-          <button type="button" className="icon-btn back" aria-label="목록으로" onClick={onClose}><BackIcon /></button>
+          {onClose && <button type="button" className="icon-btn back" aria-label="목록으로" onClick={onClose}><BackIcon /></button>}
           <span className="p-name" title={s.name}>{s.name}</span>
           <span className={`tag ${TAG_COLOR[s.status]}`}><span className="dot" />{label}</span>
-          {onDelete && canDelete(s.status) && (
+          {share && (
+            <button type="button" className="btn sm p-share" onClick={onShare} title="링크나 사람 지정으로 이 세션을 보여 줍니다">
+              <ShareIcon size={14} />공유
+            </button>
+          )}
+          {!readOnly && onDelete && canDelete(s.status) && (
             <button type="button" className="icon-btn p-del" aria-label="세션 지우기" title="세션과 대화 기록을 지웁니다" onClick={onDelete}>
               <TrashIcon size={16} />
             </button>
           )}
-          <button type="button" className="icon-btn close" aria-label="닫기" onClick={onClose}><CloseIcon size={16} /></button>
+          {onClose && <button type="button" className="icon-btn close" aria-label="닫기" onClick={onClose}><CloseIcon size={16} /></button>}
         </div>
         <div className="p-grid">
           {kv.map(([k, v]) => (
             <div className="kv" key={k}><span className="k">{k}</span><span className="v" title={v}>{v}</span></div>
           ))}
+          {ctx && s.contextPct != null && (
+            <div className="kv kv-ctx">
+              <span className="k">컨텍스트</span>
+              <span className="v">{ctx} 사용</span>
+              <span className="ctx-bar" role="meter" aria-label="컨텍스트 사용률" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(s.contextPct)}>
+                <span className={`ctx-fill ${level(s.contextPct)}`} style={{ width: `${Math.max(0, Math.min(100, s.contextPct))}%` }} />
+              </span>
+            </div>
+          )}
+          {cost && (
+            <div className="kv"><span className="k">비용(추정)</span><span className="v">{cost}</span></div>
+          )}
         </div>
-        {(remoteUrl || remoteHint || tgSwitch) && (
+        {(remoteUrl || remoteHint || ntSwitch) && (
           <div className="p-actions">
             {remoteUrl ? (
               <a className="btn sm" href={remoteUrl} target="_blank" rel="noopener noreferrer" title="공식 원격 제어 화면을 새 탭에서 엽니다">
@@ -475,7 +535,7 @@ export function DetailPanel(props: Props) {
             ) : remoteHint ? (
               <p className="remote-hint"><InfoIcon size={14} />세션에서 <code>/remote-control</code> 을 실행하면 원격 제어 링크가 생깁니다</p>
             ) : null}
-            {tgSwitch && telegram && <TelegramSwitch s={s} ctl={telegram} />}
+            {ntSwitch && notify && <NotifySwitch s={s} ctl={notify} />}
           </div>
         )}
       </div>
@@ -571,10 +631,12 @@ export function DetailPanel(props: Props) {
             {tab === 'tool' ? (partial ? '불러온 대화에는 도구 사용 기록이 없습니다.' : '아직 도구 사용 기록이 없습니다.') : '아직 대화가 없습니다.'}
           </p>
         )}
-        {shown.map((l) => <Line key={l.seq} line={l} q={q} hit={focus?.seq === l.seq} />)}
+        {items.map((it) => (it.kind === 'line'
+          ? <Line key={it.line.seq} line={it.line} q={q} hit={focus?.seq === it.line.seq} />
+          : <ReplyNote key={`r-${it.reply.id}`} r={it.reply} now={now} />))}
         {!log?.hasMoreAfter && answerable && reply && s.pending
           ? <PendingReply s={s} pending={s.pending} ctl={reply} showError={!composer} />
-          : tab === 'chat' && !log?.hasMoreAfter && <StatusBox s={s} now={now} />}
+          : tab === 'chat' && !log?.hasMoreAfter && <StatusBox s={s} now={now} readOnly={!rw} />}
         {log?.hasMoreAfter && (
           <div className="to-latest">
             <button type="button" className="btn sm primary" onClick={toLatest}>
@@ -586,6 +648,7 @@ export function DetailPanel(props: Props) {
       </div>
       {composer && reply && <Composer s={s} ctl={reply} />}
       {!composer && blocked && <div className="reply-off" role="note"><InfoIcon size={14} />{blocked}</div>}
+      {!composer && !blocked && note && <div className="reply-off" role="note"><InfoIcon size={14} />{note}</div>}
       <div className="p-foot"><span className={quiet || !connected ? 'live-dot off' : 'live-dot'} />{foot}</div>
     </aside>
   );

@@ -1,7 +1,7 @@
 // DB 행 → 계약의 뷰 타입. 조회 API·스트림·수집이 함께 쓴다.
 import type { AccountView, DashboardSnapshot, LogLine, LogResponse, MachineView, SessionStatus, SessionView, SettingsView } from '@c-monitor/shared';
 import { machineCanReply, statusCanReply, toPendingView, type PendingRow } from '../reply/pending';
-import type { Bus, Q } from '../types';
+import type { Bus, Q, User } from '../types';
 
 export const ONLINE_MS = 10 * 60_000;
 export const DEFAULT_SETTINGS: SettingsView = { lostMinutes: 10, endHours: 24, keepChatDays: 30, keepUsageDays: 90 };
@@ -15,6 +15,7 @@ export type SessionRow = {
   activity_label: string | null; activity_text: string | null;
   remote_url: string | null;
   telegram: boolean;
+  context_pct: number | null; cost_usd: number | null; stats_at: Date | null;
 };
 
 /** 세션 뷰의 원격 답장 부분. 소유자가 아닌 사람에게 가는 뷰는 NO_REPLY를 쓴다. */
@@ -46,8 +47,51 @@ export function toSessionView(r: SessionRow, reply: ReplyInfo = NO_REPLY): Sessi
     canReply: reply.canReply,
     queuedMessages: reply.queuedMessages,
     remoteUrl: r.remote_url,
+    contextPct: r.context_pct,
+    costUsd: r.cost_usd,
     telegram: r.telegram,
   };
+}
+
+/** 소유자가 아닌 사람(관리자 열람)에게 보낼 모양: 원격 답장 정보를 비운다. */
+export function stripReply(view: SessionView): SessionView {
+  return { ...view, ...NO_REPLY };
+}
+
+/** 사람 지정 공유로 받은 사람에게 보낼 모양: 원격 답장·원격 제어 주소를 비우고 소유자 이메일을 붙인다. */
+export function toSharedView(view: SessionView, ownerEmail: string): SessionView {
+  return { ...view, ...NO_REPLY, remoteUrl: null, telegram: false, sharedBy: ownerEmail };
+}
+
+/**
+ * 공유가 지금 쓸 수 있는 상태인지의 조건(shares sh, users o = 세션 소유자와 함께 쓴다):
+ * 만료되지 않았고, 소유자가 승인된 사용자이며 탈퇴 중이 아니다.
+ */
+export const shareValid = (sql: Q, now: Date) =>
+  sql`(sh.expires_at IS NULL OR sh.expires_at > ${now}) AND o.status = 'active' AND o.delete_at IS NULL`;
+
+/** 그 사용자가 사람 지정으로 공유받은(지금 쓸 수 있는) 세션들: 세션 id → 소유자 id·이메일. */
+export async function loadSharedWith(sql: Q, userId: string, now: Date): Promise<Map<string, { ownerId: string; ownerEmail: string }>> {
+  const rows = await sql<{ session_id: string; owner_id: string; owner_email: string }[]>`
+    SELECT sh.session_id, s.user_id AS owner_id, o.email AS owner_email
+    FROM shares sh JOIN sessions s ON s.id = sh.session_id JOIN users o ON o.id = s.user_id
+    WHERE sh.target_user_id = ${userId} AND ${shareValid(sql, now)}`;
+  return new Map(rows.map((r) => [r.session_id, { ownerId: r.owner_id, ownerEmail: r.owner_email }]));
+}
+
+/**
+ * 보는 사람이 그 세션을 어떤 자격으로 볼 수 있는가. owner(소유자) · admin(관리자 열람) · shared(사람 지정 공유) · null(못 봄).
+ * 읽기 경로(대화·검색·답 기록)만 admin·shared를 허용하고, 쓰기 경로는 owner만 허용한다.
+ */
+export async function sessionAccess(sql: Q, sessionId: string, user: Pick<User, 'id' | 'role'>, now: Date): Promise<'owner' | 'admin' | 'shared' | null> {
+  const [row] = await sql<{ user_id: string }[]>`SELECT user_id FROM sessions WHERE id = ${sessionId}`;
+  if (!row) return null;
+  if (row.user_id === user.id) return 'owner';
+  if (user.role === 'admin') return 'admin';
+  const shared = await sql`
+    SELECT 1 FROM shares sh JOIN users o ON o.id = sh.owner_id
+    WHERE sh.session_id = ${sessionId} AND sh.target_user_id = ${user.id} AND ${shareValid(sql, now)} LIMIT 1`;
+  return shared.length > 0 ? 'shared' : null;
 }
 
 /**
@@ -189,6 +233,7 @@ export async function loadAccountViews(sql: Q, userId: string, now: Date, email?
  * 대시보드 한 화면분. 기본은 폐기된 기기와 그 세션, 그리고 종료된 지 end_hours가 지난 세션을 뺀다.
  * history=true면 모두 포함한다(기록 탭).
  * viewerId는 보는 사람 — 남의 것을 보는 경우(관리자 열람)에는 원격 답장 정보를 비운다. 기본은 본인.
+ * 기록 탭이 아니면 사람 지정으로 공유받은 세션도 sharedBy를 붙여 함께 넣는다(보기만).
  */
 export async function loadSnapshot(
   sql: Q, userId: string, now: Date, opts: { history?: boolean; viewerId?: string } = {},
@@ -208,7 +253,19 @@ export async function loadSnapshot(
     loadMachineViews(sql, userId, now, { includeRevoked: opts.history }),
     loadAccountViews(sql, userId, now),
   ]);
-  return { sessions: await toSessionViews(sql, sessionRows, opts.viewerId ?? userId), machines, accounts };
+  const sessions = await toSessionViews(sql, sessionRows, opts.viewerId ?? userId);
+  if (!opts.history) {
+    const shared = await sql<(SessionRow & { owner_email: string })[]>`
+      SELECT s.*, o.email AS owner_email
+      FROM shares sh JOIN sessions s ON s.id = sh.session_id JOIN users o ON o.id = s.user_id
+      JOIN machines m ON m.id = s.machine_id
+      WHERE sh.target_user_id = ${userId} AND s.user_id <> ${userId} AND m.revoked_at IS NULL AND ${shareValid(sql, now)}
+        AND NOT (s.status = 'end' AND s.ended_at IS NOT NULL AND s.ended_at < ${cutoff})
+      ORDER BY s.last_event_at DESC`;
+    for (const r of shared) sessions.push(toSharedView(toSessionView(r), r.owner_email));
+    if (shared.length > 0) sessions.sort((a, b) => b.lastEventAt.localeCompare(a.lastEventAt));
+  }
+  return { sessions, machines, accounts };
 }
 
 type LineRow = {

@@ -1,4 +1,4 @@
-// 설정: 내 컴퓨터, 클로드 계정(별칭·숨기기), 알림(텔레그램), 표시 기준, 보관 기간.
+// 설정: 내 컴퓨터, 클로드 계정(별칭·숨기기), 알림(텔레그램·웹 알림·소리), 표시 기준, 보관 기간, 계정(용량·탈퇴).
 import { REPLY_MIN_PLUGIN, type AccountView, type MachineView, type MeResponse, type SettingsView } from '@c-monitor/shared';
 import { useEffect, useState } from 'react';
 import * as api from '../api/client';
@@ -7,10 +7,12 @@ import { Sec, SidePage } from '../components/SidePage';
 import { formatAgo } from '../lib/format';
 import { pluginSupportsReply } from '../lib/reply';
 import { navigate } from '../router';
+import { AccountSection } from './Account';
 import { NotifySection } from './Notify';
 
 const NAV: [string, string][] = [
   ['machines', '컴퓨터'], ['accounts', '클로드 계정'], ['notify', '알림'], ['rules', '표시 기준'], ['retention', '보관 기간'],
+  ['account', '계정'],
 ];
 
 type NumKey = keyof SettingsView;
@@ -18,8 +20,9 @@ type NumKey = keyof SettingsView;
 const FIELDS: { key: NumKey; id: string; label: string; unit: string; min: number; max: number }[] = [
   { key: 'lostMinutes', id: 'lost-min', label: '연락 끊김으로 표시', unit: '분 동안 소식이 없을 때', min: 1, max: 1440 },
   { key: 'endHours', id: 'end-hour', label: '종료 카드 유지', unit: '시간 뒤 목록에서 숨깁니다', min: 0, max: 8760 },
-  { key: 'keepChatDays', id: 'keep-chat', label: '대화 기록', unit: '일', min: 1, max: 3650 },
-  { key: 'keepUsageDays', id: 'keep-usage', label: '사용량 기록', unit: '일', min: 1, max: 3650 },
+  // 보관 기간 0 = 지우지 않음(3차)
+  { key: 'keepChatDays', id: 'keep-chat', label: '대화 기록', unit: '일', min: 0, max: 3650 },
+  { key: 'keepUsageDays', id: 'keep-usage', label: '사용량 기록', unit: '일', min: 0, max: 3650 },
 ];
 /** 별칭 최대 길이(서버 AccountPatchSchema와 같음). */
 const ALIAS_MAX = 60;
@@ -157,7 +160,7 @@ export function Settings({ me }: { me: MeResponse }) {
       me={me}
       page="settings"
       title="설정"
-      desc="연결한 컴퓨터와 클로드 계정, 텔레그램 알림, 카드 표시 기준과 보관 기간을 정합니다."
+      desc="연결한 컴퓨터와 클로드 계정, 알림, 카드 표시 기준과 보관 기간, 내 계정을 정합니다."
       nav={NAV}
       menuLabel="설정 메뉴"
       actions={
@@ -256,8 +259,9 @@ export function Settings({ me }: { me: MeResponse }) {
         <div className="form-grid">{FIELDS.slice(0, 2).map(numField)}</div>
       </Sec>
 
-      <Sec id="retention" title="보관 기간" desc="기간이 지난 기록은 매일 새벽 4시에 지웁니다." body>
+      <Sec id="retention" title="보관 기간" desc="기간이 지난 기록은 매일 새벽 4시에 지웁니다. 0을 넣으면 지우지 않습니다." body>
         <div className="form-grid">{FIELDS.slice(2).map(numField)}</div>
+        <p className="hint" style={{ margin: 0 }}>0을 넣으면 지우지 않습니다. 저장 용량 한도를 넘으면 기간과 상관없이 오래된 대화부터 지웁니다.</p>
       </Sec>
 
       <div className="save-bar">
@@ -265,6 +269,8 @@ export function Settings({ me }: { me: MeResponse }) {
         <button type="button" className="btn" onClick={revert} disabled={saving}>되돌리기</button>
         <button type="button" className="btn primary" onClick={save} disabled={saving || !draft}>저장</button>
       </div>
+
+      <AccountSection me={me} />
     </SidePage>
   );
 }

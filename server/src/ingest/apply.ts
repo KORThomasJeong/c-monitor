@@ -1,7 +1,7 @@
 // 수집 묶음을 DB에 반영하고, 바뀐 것을 소유자에게만 알린다.
 import {
   nextStatus,
-  type HookEvent, type IngestBatch, type LogLine, type SessionStatus,
+  type HookEvent, type IngestBatch, type LogLine, type SessionStat, type SessionStatus,
 } from '@c-monitor/shared';
 import { loadAccountViews, loadMachineViews, loadSessionViews, ONLINE_MS, type SessionRow } from '../query/views';
 import { notifyLimits, notifySessionChanges, type StatusChange } from '../notify/notify';
@@ -250,6 +250,26 @@ export async function applyBatch(deps: Deps, machine: Machine, batch: IngestBatc
           remote_url = EXCLUDED.remote_url`;
     }
 
+    // ── 상태줄의 컨텍스트 %·비용(3차) ─────────────────────
+    // 이 기기의 세션에만 반영한다(세션 id 앞에 기기 id가 붙어 남의 세션은 가리킬 수 없다).
+    // 모르는 세션(아직 행이 없거나 지운 세션)은 조용히 건너뛴다. 값이 바뀐 세션만 다시 내보낸다.
+    const latestStat = new Map<string, SessionStat>();
+    for (const st of batch.sessionStats ?? []) {
+      const cur = latestStat.get(st.sessionId);
+      if (!cur || new Date(st.at).getTime() >= new Date(cur.at).getTime()) latestStat.set(st.sessionId, st);
+    }
+    const statChanged: string[] = [];
+    for (const st of latestStat.values()) {
+      const rows = await tx<{ id: string }[]>`
+        UPDATE sessions SET context_pct = ${st.contextPct}, cost_usd = ${st.costUsd}, stats_at = ${st.at}
+        WHERE id = ${sid(st.sessionId)} AND user_id = ${userId} AND machine_id = ${machine.id}
+          AND (stats_at IS NULL OR stats_at <= ${st.at})
+          AND (context_pct IS DISTINCT FROM ${st.contextPct}::double precision
+               OR cost_usd IS DISTINCT FROM ${st.costUsd}::double precision)
+        RETURNING id`;
+      for (const r of rows) statChanged.push(r.id);
+    }
+
     // 클로드 계정: 이벤트와 한도에 나온 것을 모두 등록한다.
     const emails = [...new Set([
       ...events.map((e) => e.account).filter((a): a is string => !!a),
@@ -326,7 +346,7 @@ export async function applyBatch(deps: Deps, machine: Machine, batch: IngestBatc
     }
 
     return {
-      accepted: events.length, dirty: dirtyIds, changes, limitsInserted, newLines, accountsChanged: [...accountsChanged], goneRequests,
+      accepted: events.length, dirty: [...new Set([...dirtyIds, ...statChanged])], changes, limitsInserted, newLines, accountsChanged: [...accountsChanged], goneRequests,
       done: dirtyIds.filter((id) => states.get(id)!.status === 'done'),
       ended: dirtyIds.filter((id) => states.get(id)!.status === 'end'),
     };

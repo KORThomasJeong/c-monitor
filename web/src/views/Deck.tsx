@@ -25,7 +25,7 @@ export function Deck({ sessions, machines, styleOf, now, onOpen, onDelete }: Pro
           machineName={nameOf.get(s.machineId) ?? '알 수 없는 컴퓨터'}
           now={now}
           onOpen={onOpen}
-          onDelete={onDelete}
+          onDelete={s.sharedBy ? undefined : onDelete}
         />
       ))}
     </main>

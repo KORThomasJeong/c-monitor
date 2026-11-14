@@ -13,8 +13,15 @@ const OAUTH_SECONDS = 10 * 60;
 
 const isSecure = (config: Config) => config.publicUrl.startsWith('https://');
 
-type UserRow = { id: string; email: string; name: string | null; role: User['role']; status: User['status'] };
-export const toUser = (r: UserRow): User => ({ id: r.id, email: r.email, name: r.name, role: r.role, status: r.status });
+export type UserRow = {
+  id: string; email: string; name: string | null; role: User['role']; status: User['status'];
+  consented_at: Date | null; delete_at: Date | null;
+};
+export const toUser = (r: UserRow): User => ({
+  id: r.id, email: r.email, name: r.name, role: r.role, status: r.status,
+  consentedAt: r.consented_at ? r.consented_at.toISOString() : null,
+  deleteAt: r.delete_at ? r.delete_at.toISOString() : null,
+});
 
 /** 로그인 세션을 만들고 쿠키에 넣을 토큰 원문을 돌려준다(DB에는 해시만). */
 export async function createWebSession(sql: Q, userId: string, now: Date): Promise<string> {
@@ -26,7 +33,7 @@ export async function createWebSession(sql: Q, userId: string, now: Date): Promi
 
 export async function findUserBySessionToken(sql: Q, token: string, now: Date): Promise<User | null> {
   const [row] = await sql<UserRow[]>`
-    SELECT u.id, u.email, u.name, u.role, u.status
+    SELECT u.id, u.email, u.name, u.role, u.status, u.consented_at, u.delete_at
     FROM web_sessions w JOIN users u ON u.id = w.user_id
     WHERE w.id = ${sha256Hex(token)} AND w.expires_at > ${now}`;
   return row ? toUser(row) : null;

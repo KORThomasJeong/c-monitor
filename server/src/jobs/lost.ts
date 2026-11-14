@@ -3,7 +3,7 @@ import { notifySessionChanges } from '../notify/notify';
 import { loadSessionViews } from '../query/views';
 import type { Deps } from '../types';
 
-export async function runLostCheck(deps: Pick<Deps, 'sql' | 'bus' | 'now' | 'config' | 'telegram'>): Promise<number> {
+export async function runLostCheck(deps: Pick<Deps, 'sql' | 'bus' | 'now' | 'config' | 'telegram' | 'push'>): Promise<number> {
   const now = deps.now();
   const rows = await deps.sql<{ id: string }[]>`
     UPDATE sessions s SET status = 'lost'

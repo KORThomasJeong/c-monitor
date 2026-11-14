@@ -120,6 +120,10 @@ export type DevicePollResponse = { token: string; machineId: string; machineName
 export type UserView = {
   id: string; email: string; name: string | null;
   role: 'admin' | 'user'; status: 'pending' | 'active' | 'suspended';
+  /** 가입 고지에 동의한 시각. null이면 웹이 동의 화면을 먼저 보여 준다(동의 전에는 관리자에게 신청이 알려지지 않는다). */
+  consentedAt: string | null;
+  /** 탈퇴 신청 뒤 완전 삭제 예정 시각. null이면 탈퇴하지 않음. 값이 있으면 웹은 "탈퇴 취소" 화면만 보여 준다. */
+  deleteAt: string | null;
 };
 export type MeResponse = { user: UserView; pendingCount?: number };
 
@@ -155,6 +159,9 @@ export type SessionView = {
   queuedMessages: number;
   /** 공식 원격 제어 화면 주소(없으면 null) */
   remoteUrl: string | null;
+  /** 상태줄이 보낸 마지막 컨텍스트 사용률(0~100)과 누적 비용(USD). 모르면 null */
+  contextPct: number | null;
+  costUsd: number | null;
   /** 이 세션의 알림을 텔레그램으로 받는가(세션별 스위치, 기본 켬). 사용자의 항목별 설정과 함께 적용된다. */
   telegram: boolean;
 };
@@ -210,6 +217,7 @@ export type LogSearchResponse = {
   total: number;
 };
 
+/** keepChatDays·keepUsageDays 가 0이면 지우지 않는다(3차). */
 export type SettingsView = { lostMinutes: number; endHours: number; keepChatDays: number; keepUsageDays: number };
 
 // ── 실시간 스트림(SSE) ────────────────────────────────────
@@ -220,7 +228,9 @@ export type StreamMessage =
   | { type: 'limits'; account: AccountView }
   | { type: 'machine'; machine: MachineView }
   /** 세션이 지워졌다(사용자가 삭제). 화면에서 카드와 불러 둔 대화를 없앤다. */
-  | { type: 'removed'; sessionIds: string[] };
+  | { type: 'removed'; sessionIds: string[] }
+  /** 웹·텔레그램에서 답한 기록(3차) */
+  | { type: 'reply'; sessionId: string; reply: ReplyRecord };
 
 // ── 세션 삭제 ─────────────────────────────────────────────
 // DELETE /api/sessions/:id → { ok: true }
@@ -411,3 +421,125 @@ export type AdminTelegramView = {
  */
 export const ReplyInboxAckSchema = z.object({ sessionId: z.string().min(1).max(200), id: z.string().min(1).max(200) });
 export type ReplyInboxAckResponse = { ok: true };
+
+// ══ 3차 ═══════════════════════════════════════════════════
+// 계획: docs/superpowers/plans/2026-11-14-plan3-rest.md
+
+// ── 대시보드 바로 열기 ───────────────────────────────────
+// 웹 주소 /?session=<encodeURIComponent(세션id)> 로 들어오면 그 세션 상세를 연다(텔레그램·웹 푸시 알림의 링크).
+
+// ── 웹 답 기록 ────────────────────────────────────────────
+// GET /api/sessions/:id/replies → { replies: ReplyRecord[] } (오래된 순, 최근 200개)
+// 웹·텔레그램에서 답하거나 글을 보낼 때마다 하나씩 생기고, 스트림으로 { type:'reply', sessionId, reply } 가 나간다.
+// 웹은 대화 줄 사이에 시각 순으로 끼워 "웹에서 「허용」으로 답했습니다" 처럼 보여 준다.
+export type ReplyRecord = {
+  id: string;
+  at: string;
+  source: 'web' | 'telegram';
+  kind: 'permission' | 'answer' | 'message';
+  /** 사람이 읽을 한 줄: "허용", "이 세션 동안 허용", "거부", 고른 답, 보낸 글 앞 200자 */
+  label: string;
+};
+
+// ── 공유 ──────────────────────────────────────────────────
+// POST   /api/sessions/:id/shares   ShareCreateSchema → ShareView (소유자만)
+// GET    /api/sessions/:id/shares   → { shares: ShareView[] }
+// DELETE /api/shares/:id            → { ok: true } (만든 사람만)
+// 링크 공유: 로그인 없이 /s/<토큰> 에서 보기만. 토큰은 해시로 저장하므로 url 은 만들 때 한 번만 내려준다.
+// 사람 지정: 가입한 사용자 이메일. 받은 사람의 대시보드 스냅샷·스트림에 sharedBy 가 붙은 세션으로 들어간다(보기만).
+// 409 { error: 'user_not_found' }  사람 지정에서 가입하지 않은 이메일
+// 409 { error: 'self' }            자기 자신
+export const ShareCreateSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('link'), expiresIn: z.enum(['1h', '1d', '7d', 'never']) }),
+  z.object({ kind: z.literal('user'), email: z.string().trim().toLowerCase().email().max(320) }),
+]);
+export type ShareView = {
+  id: string;
+  kind: 'link' | 'user';
+  /** link: 만들 때만 채운다(그 뒤로는 null) */
+  url: string | null;
+  email: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+};
+/**
+ * 로그인 없이 보는 공유 링크(토큰으로만):
+ *   GET /api/public/s/:token         → PublicSessionView (만료·취소·세션 삭제·소유자 탈퇴면 404)
+ *   GET /api/public/s/:token/log     → LogResponse (before/after/around/limit 같은 규칙)
+ *   GET /api/public/s/:token/stream  → SSE: { type:'public', session: PublicSessionView } 와 { type:'log', lines } 만
+ * 컴퓨터 정보·다른 세션·답장·원격 제어 주소·소유자 이메일은 절대 내보내지 않는다.
+ */
+export type PublicSessionView = {
+  name: string; status: SessionStatus; branch: string | null; model: string | null;
+  startedAt: string; lastEventAt: string; endedAt: string | null;
+  activity: { label: string; text: string } | null;
+  contextPct: number | null; costUsd: number | null;
+  expiresAt: string | null;
+};
+/** GET /api/public/s/:token/stream 의 data 메시지(세션 id·컴퓨터 정보 없음). */
+export type PublicStreamMessage =
+  | { type: 'public'; session: PublicSessionView }
+  | { type: 'log'; lines: LogLine[] };
+
+// ── 계정: 동의·탈퇴 ───────────────────────────────────────
+// POST /api/me/consent   → MeResponse (동의 시각 저장. 승인 대기 사용자면 이때 관리자에게 가입 신청 알림)
+// POST /api/me/withdraw  → MeResponse (즉시 모든 API·기기 전송 차단, 공유 링크 무효, WITHDRAW_DAYS 뒤 완전 삭제)
+// POST /api/me/restore   → MeResponse (deleteAt 전이면 되살린다. 기기 연결도 그대로 되살아난다)
+// 탈퇴 중인 사용자는 /api/me·/api/me/restore·/auth/logout 만 쓸 수 있고 나머지는 403 { error: 'withdrawn' }.
+export const WITHDRAW_DAYS = 7;
+
+// ── 저장 용량 ─────────────────────────────────────────────
+// GET /api/me/storage → StorageMe
+// 매일 정리 때 사용자 사용량이 한도를 넘으면 오래된 대화 줄부터 지우고(최근 24시간 줄은 지우지 않음) 알림을 보낸다.
+export const DEFAULT_QUOTA_MB = 1024;
+export type StorageMe = { bytes: number; quotaMb: number; trimmedAt: string | null };
+
+// ── 웹 푸시 ───────────────────────────────────────────────
+// GET    /api/push/key            → { publicKey }  (VAPID 공개 키, 서버가 처음 뜰 때 만들어 DB에 둔다)
+// GET    /api/push/subscriptions  → { subscriptions: { endpoint: string; label: string | null; createdAt: string }[] }
+// POST   /api/push/subscribe      PushSubscribeSchema → { ok: true }  (같은 endpoint 는 덮어씀)
+// DELETE /api/push/subscribe      { endpoint } → { ok: true }
+// POST   /api/push/test           { endpoint } → { ok: true } / 404
+// 웹 푸시는 텔레그램과 같은 NotifySettings 와 세션별 스위치(SessionView.telegram 을 "알림" 스위치로 함께 쓴다)를 따른다.
+// 텔레그램 연결 여부와 상관없이 동작한다. 알림을 누르면 /?session=<id> 가 열린다. 만료(404·410)된 구독은 서버가 지운다.
+export const PushSubscribeSchema = z.object({
+  endpoint: z.string().url().max(2000),
+  keys: z.object({ p256dh: z.string().min(1).max(200), auth: z.string().min(1).max(100) }),
+  /** 사람이 알아볼 이름(예: "Chrome · Windows") */
+  label: z.string().max(100).optional(),
+});
+
+// ── 관리자 ────────────────────────────────────────────────
+// GET    /api/admin/users              → { users: AdminUserView[] } (기존 응답에 필드 추가)
+// POST   /api/admin/users              AdminUserCreateSchema → AdminUserView (미리 추가: 첫 로그인 때 승인 없이 사용, 동의는 받음)
+// PATCH  /api/admin/users/:id          AdminUserPatchSchema → AdminUserView (권한·용량 한도. 자기 자신의 관리자 권한은 못 내림)
+// POST   /api/admin/users/:id/restore  → AdminUserView (탈퇴 취소)
+// DELETE /api/admin/users/:id          → { ok: true } (즉시 완전 삭제. 자기 자신 불가)
+// GET    /api/admin/machines           → { machines: AdminMachineView[] }
+// PATCH  /api/admin/machines/:id       MachinePatchSchema → AdminMachineView
+// DELETE /api/admin/machines/:id       → { ok: true } (연결 해제)
+// GET    /api/admin/storage            → AdminStorageView
+// 관리자가 남의 대시보드 보기: GET /api/sessions?user=<id> (이미 있음), GET /api/stream?user=<id> (관리자만).
+// 이때 웹은 읽기 전용(답장·삭제·설정 숨김), 서버도 남의 세션에 대한 쓰기는 404로 막는다.
+export const AdminUserCreateSchema = z.object({
+  email: z.string().trim().toLowerCase().email().max(320),
+  role: z.enum(['admin', 'user']),
+});
+export const AdminUserPatchSchema = z.object({
+  role: z.enum(['admin', 'user']).optional(),
+  /** 0 = 무제한 */
+  quotaMb: z.number().int().min(0).max(1_000_000).optional(),
+});
+export type AdminUserView = UserView & {
+  createdAt: string; lastLoginAt: string | null;
+  quotaMb: number; bytes: number; machines: number;
+  /** 관리자가 미리 추가했지만 아직 로그인하지 않음 */
+  invited: boolean;
+};
+export type AdminMachineView = MachineView & { ownerId: string; ownerEmail: string; account: string | null };
+export type AdminStorageView = {
+  totalBytes: number; chatBytes: number; usageBytes: number; otherBytes: number;
+  /** 서버 디스크 남은 공간(알 수 없으면 null) */
+  diskFreeBytes: number | null;
+  users: { id: string; email: string; bytes: number; quotaMb: number }[];
+};

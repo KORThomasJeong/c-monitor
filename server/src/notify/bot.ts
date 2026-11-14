@@ -44,7 +44,7 @@ async function linkedUser(deps: Deps, chatId: number): Promise<string | null> {
   // 승인된(active) 사용자만 — 정지·대기 중인 사용자는 웹처럼 텔레그램으로도 답할 수 없다.
   const [r] = await deps.sql<{ user_id: string }[]>`
     SELECT l.user_id FROM telegram_links l JOIN users u ON u.id = l.user_id
-    WHERE l.chat_id = ${chatId} AND u.status = 'active'`;
+    WHERE l.chat_id = ${chatId} AND u.status = 'active' AND u.delete_at IS NULL`;
   return r?.user_id ?? null;
 }
 
@@ -65,13 +65,13 @@ async function linkChat(deps: Deps, msg: TgMessage, rawCode: string): Promise<st
   const now = deps.now();
   const result = await deps.sql.begin(async (tx): Promise<'ok' | 'wrong' | 'expired' | 'inactive'> => {
     // 1회용: 맞든 만료됐든 쓰면 지운다.
-    const [c] = await tx<{ user_id: string; expires_at: Date; status: string }[]>`
+    const [c] = await tx<{ user_id: string; expires_at: Date; status: string; withdrawn: boolean }[]>`
       DELETE FROM telegram_link_codes c USING users u
       WHERE c.code = ${code} AND u.id = c.user_id
-      RETURNING c.user_id, c.expires_at, u.status`;
+      RETURNING c.user_id, c.expires_at, u.status, u.delete_at IS NOT NULL AS withdrawn`;
     if (!c) return 'wrong';
     if (c.expires_at <= now) return 'expired';
-    if (c.status !== 'active') return 'inactive';
+    if (c.status !== 'active' || c.withdrawn) return 'inactive';
     await tx`DELETE FROM telegram_links WHERE chat_id = ${msg.chat.id} OR user_id = ${c.user_id}`;
     await tx`
       INSERT INTO telegram_links (user_id, chat_id, name, linked_at)
@@ -120,7 +120,7 @@ async function replyToSession(deps: Deps, userId: string, chatId: number, messag
     : pending?.kind === 'question' && q0
       ? { type: 'answer', requestId: pending.id, answers: { [q0.question]: text } }
       : { type: 'message', text };
-  const res = await submitReply(deps, userId, row.session_id, body);
+  const res = await submitReply(deps, userId, row.session_id, body, 'telegram');
   if (!res.ok) return `${failText(res.error)}.`;
   if (body.type === 'permission') return '거부하고 글을 클로드에게 전했습니다.';
   if (body.type === 'answer') return '답을 보냈습니다.';
@@ -196,7 +196,7 @@ async function onCallback(deps: Deps, bot: TelegramBot, cq: TgCallbackQuery): Pr
     done = '답을 보냈습니다';
   }
 
-  const res = await submitReply(deps, userId, row.session_id, body);
+  const res = await submitReply(deps, userId, row.session_id, body, 'telegram');
   if (res.ok) {
     await toast(done);
     await editResult(deps, bot, row, line);

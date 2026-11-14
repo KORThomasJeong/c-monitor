@@ -99,6 +99,14 @@ export function signupText(publicUrl: string, u: { email: string; name: string |
   );
 }
 
+export function trimText(publicUrl: string, t: { lines: number; quotaMb: number }): string {
+  return lines(
+    '💾 <b>저장 용량 한도</b>',
+    `저장 용량 한도(${t.quotaMb}MB)를 넘어 오래된 대화 ${t.lines}줄을 지웠습니다. 최근 24시간 대화는 남겨 둡니다.`,
+    link(`${publicUrl}/`, '대시보드에서 열기'),
+  );
+}
+
 export const TEST_TEXT = '🔔 <b>c-monitor</b>\n시험 알림입니다. 앞으로 알림이 이 채팅으로 옵니다.';
 
 // ── 버튼 ────────────────────────────────────────────────

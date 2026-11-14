@@ -1,4 +1,5 @@
-// 설정 > 알림: 텔레그램 연결과 알림 항목 스위치. 계약은 shared/src/contract.ts "알림(텔레그램)" 절.
+// 설정 > 알림: 텔레그램 연결, 웹 알림(이 브라우저에서 받기), 알림 항목 스위치(텔레그램·웹 공통), 웹 알림 소리.
+// 계약은 shared/src/contract.ts "알림(텔레그램)"·"웹 푸시" 절. 항목 스위치는 텔레그램이나 웹 알림 중 하나라도 있으면 쓸 수 있다.
 // 스위치·숫자는 저장 단추 없이 바로 저장하고, 실패하면 마지막으로 서버가 확인해 준 값으로 되돌린다.
 import type { NotifySettings, NotifyView, TelegramLinkResponse } from '@c-monitor/shared';
 import { useEffect, useRef, useState } from 'react';
@@ -6,6 +7,7 @@ import * as api from '../api/client';
 import { Sec } from '../components/SidePage';
 import { formatClock } from '../lib/format';
 import { Link } from '../router';
+import { SoundRow, WebPushBlock } from './WebPush';
 
 /** 연결될 때까지 다시 묻는 간격 */
 export const POLL_MS = 3000;
@@ -57,6 +59,17 @@ export function NotifySection({ isAdmin = false }: { isAdmin?: boolean }) {
   const saved = useRef<NotifySettings | null>(null);
   /** 저장 요청 차례. 늦게 도착한 옛 응답이 새 값을 덮지 않게 한다. */
   const saveSeq = useRef(0);
+  /** 이 계정에서 웹 알림을 받는 브라우저(항목 스위치를 쓸 수 있는지에도 쓴다) */
+  const [subs, setSubs] = useState<api.PushSubscriptionInfo[] | null>(null);
+  const [subsFailed, setSubsFailed] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    api.getPushSubscriptions()
+      .then((list) => live && setSubs(list))
+      .catch(() => { if (live) { setSubs([]); setSubsFailed(true); } });
+    return () => { live = false; };
+  }, []);
 
   const apply = (v: NotifyView) => {
     saved.current = v.settings;
@@ -220,13 +233,10 @@ export function NotifySection({ isAdmin = false }: { isAdmin?: boolean }) {
 
   const tg = view?.telegram;
   const linked = !!tg?.linked;
-  const off = !linked;
+  /** 텔레그램도 웹 알림도 없으면 항목을 고를 수 없다(받을 곳이 없다). */
+  const off = !linked && !(subs?.length);
   const s = view?.settings;
   const shownPct = s?.limitPct ?? 80;
-
-  const aside = tg?.available
-    ? <span className={linked ? 'tag green' : 'tag neutral'}><span className="dot" />{linked ? '연결됨' : '연결 안 됨'}</span>
-    : undefined;
 
   const noteEl = (
     <p className={note ? (note.ok ? 'save-note ok' : 'save-note bad') : 'save-note'} role="status" hidden={!note}>
@@ -234,13 +244,13 @@ export function NotifySection({ isAdmin = false }: { isAdmin?: boolean }) {
     </p>
   );
 
-  let body;
+  let tgBody;
   if (loadFailed) {
-    body = <p className="hint">알림 설정을 불러오지 못했습니다. 잠시 뒤 다시 열어 주세요.</p>;
-  } else if (!view || !tg || !s) {
-    body = <p className="hint">불러오는 중입니다.</p>;
+    tgBody = <p className="hint">알림 설정을 불러오지 못했습니다. 잠시 뒤 다시 열어 주세요.</p>;
+  } else if (!view || !tg) {
+    tgBody = <p className="hint">불러오는 중입니다.</p>;
   } else if (!tg.available) {
-    body = (
+    tgBody = (
       <p className="notice tg-none" role="note">
         서버에 텔레그램 봇이 설정되지 않았습니다.{' '}
         {isAdmin
@@ -249,65 +259,83 @@ export function NotifySection({ isAdmin = false }: { isAdmin?: boolean }) {
       </p>
     );
   } else {
-    body = (
-      <>
-        <div className="tg-box">
-          {linked ? (
-            <>
-              <div className="dl">
-                <div className="dl-row"><span className="k">연결된 계정</span><span className="v">{tg.linkedName ?? '—'}</span></div>
-                <div className="dl-row"><span className="k">연결한 시각</span><span className="v">{formatClock(tg.linkedAt, now)}</span></div>
-                {tg.botUsername && (
-                  <div className="dl-row"><span className="k">알림 봇</span><span className="v">@{tg.botUsername}</span></div>
-                )}
-              </div>
-              <div className="tg-actions">
-                <button type="button" className="btn" onClick={sendTest} disabled={busy !== null}>시험 메시지 보내기</button>
-                <button
-                  type="button"
-                  className="btn danger"
-                  onClick={unlink}
-                  onBlur={() => setConfirmUnlink(false)}
-                  disabled={busy !== null}
-                >
-                  {confirmUnlink ? '끊기 확인' : '연결 끊기'}
-                </button>
-              </div>
-            </>
-          ) : pending ? (
-            <div className="tg-wait">
-              <p className="tg-lead">텔레그램에서 시작을 누르면 연결됩니다.</p>
-              <div className="code-big tg-code" aria-label="연결 코드">{pending.code}</div>
-              <span className="hint" role="timer">{formatLeft(pending.deadline - now)}</span>
-              <div className="tg-actions">
-                <a className="btn primary" href={pending.url} target="_blank" rel="noopener noreferrer">텔레그램 열기</a>
-                <button type="button" className="btn" onClick={cancelLink}>취소</button>
-              </div>
-              <p className="hint">
-                텔레그램이 열리지 않으면 {tg.botUsername ? <b>@{tg.botUsername}</b> : '알림 봇'}에게{' '}
-                <code className="tg-cmd">/start {pending.code}</code>를 보내 주세요.
-              </p>
+    tgBody = (
+      <div className="tg-box">
+        {linked ? (
+          <>
+            <div className="dl">
+              <div className="dl-row"><span className="k">연결된 계정</span><span className="v">{tg.linkedName ?? '—'}</span></div>
+              <div className="dl-row"><span className="k">연결한 시각</span><span className="v">{formatClock(tg.linkedAt, now)}</span></div>
+              {tg.botUsername && (
+                <div className="dl-row"><span className="k">알림 봇</span><span className="v">@{tg.botUsername}</span></div>
+              )}
             </div>
-          ) : (
-            <div className="tg-wait">
-              <p className="tg-lead">
-                {expired
-                  ? '연결 코드가 만료되었습니다. 코드를 다시 받아 주세요.'
-                  : '텔레그램을 연결하면 세션 소식을 휴대폰으로 받을 수 있습니다.'}
-              </p>
-              <div className="tg-actions">
-                <button type="button" className="btn primary" onClick={startLink} disabled={busy !== null}>
-                  {expired ? '코드 다시 받기' : '텔레그램 연결'}
-                </button>
-              </div>
+            <div className="tg-actions">
+              <button type="button" className="btn" onClick={sendTest} disabled={busy !== null}>시험 메시지 보내기</button>
+              <button
+                type="button"
+                className="btn danger"
+                onClick={unlink}
+                onBlur={() => setConfirmUnlink(false)}
+                disabled={busy !== null}
+              >
+                {confirmUnlink ? '끊기 확인' : '연결 끊기'}
+              </button>
             </div>
-          )}
-        </div>
+          </>
+        ) : pending ? (
+          <div className="tg-wait">
+            <p className="tg-lead">텔레그램에서 시작을 누르면 연결됩니다.</p>
+            <div className="code-big tg-code" aria-label="연결 코드">{pending.code}</div>
+            <span className="hint" role="timer">{formatLeft(pending.deadline - now)}</span>
+            <div className="tg-actions">
+              <a className="btn primary" href={pending.url} target="_blank" rel="noopener noreferrer">텔레그램 열기</a>
+              <button type="button" className="btn" onClick={cancelLink}>취소</button>
+            </div>
+            <p className="hint">
+              텔레그램이 열리지 않으면 {tg.botUsername ? <b>@{tg.botUsername}</b> : '알림 봇'}에게{' '}
+              <code className="tg-cmd">/start {pending.code}</code>를 보내 주세요.
+            </p>
+          </div>
+        ) : (
+          <div className="tg-wait">
+            <p className="tg-lead">
+              {expired
+                ? '연결 코드가 만료되었습니다. 코드를 다시 받아 주세요.'
+                : '텔레그램을 연결하면 세션 소식을 휴대폰으로 받을 수 있습니다.'}
+            </p>
+            <div className="tg-actions">
+              <button type="button" className="btn primary" onClick={startLink} disabled={busy !== null}>
+                {expired ? '코드 다시 받기' : '텔레그램 연결'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
 
-        {noteEl}
+  const tgTag = tg?.available
+    ? <span className={linked ? 'tag green' : 'tag neutral'}><span className="dot" />{linked ? '연결됨' : '연결 안 됨'}</span>
+    : null;
 
-        <div className="sw-list">
-          {off && <p className="hint" id="notify-off">텔레그램을 연결하면 알림 항목을 고를 수 있습니다.</p>}
+  return (
+    <Sec id="notify" title="알림" desc="텔레그램과 웹 알림(브라우저)으로 세션 소식을 받습니다. 바꾸면 바로 저장됩니다." body>
+      <div className="nt-part" role="group" aria-label="텔레그램">
+        <div className="nt-head"><h3 className="nt-title">텔레그램</h3>{tgTag}</div>
+        {tgBody}
+      </div>
+      {noteEl}
+
+      <WebPushBlock subs={subs} failed={subsFailed} onSubs={setSubs} />
+
+      {view && s && (
+        <div className="sw-list" role="group" aria-label="알림 항목">
+          <div className="nt-head">
+            <h3 className="nt-title">알림 항목</h3>
+            <span className="tag neutral" title="텔레그램과 웹 알림이 같은 항목을 따릅니다">텔레그램·웹 알림 공통</span>
+          </div>
+          {off && <p className="hint" id="notify-off">텔레그램을 연결하거나 웹 알림을 켜면 알림 항목을 고를 수 있습니다.</p>}
           {ITEMS.map((it) => (
             <div className="sw-row" key={it.key}>
               <div className="sw-text">
@@ -361,17 +389,18 @@ export function NotifySection({ isAdmin = false }: { isAdmin?: boolean }) {
               onChange={(e) => void save({ limit: e.target.checked })}
             />
           </div>
+          <p className="hint nt-foot">세션마다 상세 화면의 "알림" 스위치로 끌 수 있습니다(텔레그램·웹 알림 둘 다).</p>
         </div>
+      )}
 
+      <div className="sw-list" role="group" aria-label="이 브라우저">
+        <div className="nt-head"><h3 className="nt-title">이 브라우저</h3></div>
+        <SoundRow />
+      </div>
+
+      {tg?.available && (
         <p className="notice">승인·질문 알림에서는 버튼으로 바로 답할 수 있고, 알림에 답장으로 글을 쓰면 그 세션에 전달됩니다.</p>
-      </>
-    );
-  }
-
-  return (
-    <Sec id="notify" title="알림" desc="텔레그램으로 세션 소식을 받습니다. 바꾸면 바로 저장됩니다." aside={aside} body>
-      {body}
-      {(!tg?.available || loadFailed) && noteEl}
+      )}
     </Sec>
   );
 }

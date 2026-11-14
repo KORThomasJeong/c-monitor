@@ -1,17 +1,19 @@
-// 무엇을 언제 누구에게 알리는가. 모두 deps.telegram 큐에 넣고 바로 돌아온다(요청 처리를 막지 않는다).
+// 무엇을 언제 누구에게 알리는가. 텔레그램(deps.telegram 큐)과 웹 푸시(deps.push 큐)로 보내고 바로 돌아온다(요청 처리를 막지 않는다).
+// 두 길은 같은 항목 설정(NotifySettings)과 세션별 스위치(sessions.telegram = "알림" 스위치)를 따른다.
 // 받는 사람은 세션의 소유자 한 명뿐이다(공유받은 사람·관리자에게는 남의 세션을 알리지 않는다).
 import { NOTIFY_DEFAULTS, type LimitSnapshot, type NotifySettings, type ReplyQuestion, type SessionStatus } from '@c-monitor/shared';
 import { folderName } from '../query/views';
 import { machineCanReply, summaryOf } from '../reply/pending';
 import type { Deps, Q } from '../types';
 import {
-  doneText, limitText, lostText, muteRow, optionButtons, permissionButtons, signupText, waitRequestText, waitText,
+  doneText, limitText, lostText, muteRow, optionButtons, permissionButtons, signupText, trimText, waitRequestText, waitText,
   type SessionHead,
 } from './format';
 import type { TelegramBot } from './hub';
+import { hasPushTargets, pushOnce, pushText, sendPush, type PushHead } from './push';
 import { errorLine, type InlineKeyboard } from './telegram';
 
-type NotifyDeps = Pick<Deps, 'sql' | 'config' | 'now' | 'telegram'>;
+type NotifyDeps = Pick<Deps, 'sql' | 'config' | 'now' | 'telegram' | 'push'>;
 
 /** 세션 상태가 바뀐 것 하나. text는 알림에 붙일 한 줄(끝남: 마지막 답, 기다림: 알림 문구). */
 export type StatusChange = { sessionId: string; from: SessionStatus | null; to: SessionStatus; text?: string };
@@ -36,9 +38,17 @@ export async function loadTarget(sql: Q, userId: string): Promise<Target | null>
   const [r] = await sql<({ chat_id: string } & { [K in keyof NotifyRow]: NotifyRow[K] | null })[]>`
     SELECT l.chat_id, st.notify_wait, st.notify_done, st.notify_lost, st.notify_limit, st.notify_limit_pct
     FROM telegram_links l JOIN users u ON u.id = l.user_id LEFT JOIN settings st ON st.user_id = l.user_id
-    WHERE l.user_id = ${userId} AND u.status = 'active'`;
+    WHERE l.user_id = ${userId} AND u.status = 'active' AND u.delete_at IS NULL`;
   if (!r) return null;
   return { chatId: Number(r.chat_id), settings: settingsFromRow(r) };
+}
+
+/** 웹 푸시를 받을 사용자의 항목 설정. 구독이 없거나 승인된 사용자가 아니면(탈퇴 중 포함) null. */
+async function loadPushSettings(sql: Q, userId: string): Promise<NotifySettings | null> {
+  if (!(await hasPushTargets(sql, userId))) return null;
+  const [r] = await sql<{ [K in keyof NotifyRow]: NotifyRow[K] | null }[]>`
+    SELECT notify_wait, notify_done, notify_lost, notify_limit, notify_limit_pct FROM settings WHERE user_id = ${userId}`;
+  return settingsFromRow(r);
 }
 
 type SessionInfo = {
@@ -62,6 +72,7 @@ async function loadSession(sql: Q, sessionId: string): Promise<SessionInfo | nul
 const headOf = (deps: NotifyDeps, s: SessionInfo): SessionHead => ({
   sessionId: s.id, name: folderName(s.cwd), machine: s.machine_name, publicUrl: deps.config.publicUrl,
 });
+const pushHeadOf = (s: SessionInfo): PushHead => ({ sessionId: s.id, name: folderName(s.cwd), machine: s.machine_name });
 
 /**
  * 메시지를 보내고 telegram_messages에 적는다(답장·버튼이 어느 세션 것인지 찾으려고).
@@ -136,6 +147,40 @@ export function notifyRequest(deps: NotifyDeps, requestId: string): void {
     if (await requestNotified(deps.sql, r.id)) return;
     await sendRequest(deps, bot, s, r, target);
   });
+  deps.push.enqueue('승인·질문 웹 알림', async () => {
+    const [r] = await deps.sql<RequestRow[]>`
+      SELECT id, session_id, kind, tool_name, tool_input, questions, session_allow
+      FROM reply_requests WHERE id = ${requestId} AND status = 'pending'`;
+    if (!r) return;
+    const s = await loadSession(deps.sql, r.session_id);
+    if (!s || s.status === 'end' || !s.telegram) return;
+    if (!(await loadPushSettings(deps.sql, s.user_id))?.wait) return;
+    await pushRequest(deps, s, r);
+  });
+}
+
+/** 승인·질문 웹 알림(같은 요청은 한 번만). */
+async function pushRequest(deps: NotifyDeps, s: SessionInfo, r: RequestRow): Promise<void> {
+  if (!(await pushOnce(deps.sql, s.user_id, `req:${r.id}`, deps.now()))) return;
+  await sendPush(deps, s.user_id, pushText.request(pushHeadOf(s), {
+    kind: r.kind, toolName: r.tool_name, summary: summaryOf(r.tool_input, r.questions),
+  }));
+}
+
+/** handleWait의 웹 푸시 쪽. */
+async function handleWaitPush(deps: NotifyDeps, sessionId: string, text: string | undefined): Promise<void> {
+  const s = await loadSession(deps.sql, sessionId);
+  if (!s || s.status !== 'wait' || !s.telegram) return;
+  if (!(await loadPushSettings(deps.sql, s.user_id))?.wait) return;
+  const requests = await deps.sql<RequestRow[]>`
+    SELECT id, session_id, kind, tool_name, tool_input, questions, session_allow
+    FROM reply_requests WHERE session_id = ${sessionId} AND status = 'pending' ORDER BY created_at, id`;
+  if (requests.length > 0) {
+    for (const r of requests) await pushRequest(deps, s, r);
+    return;
+  }
+  if (!deps.push.throttle(`${sessionId}:wait`, deps.now())) return;
+  await sendPush(deps, s.user_id, pushText.wait(pushHeadOf(s), text ?? s.activity_text ?? ''));
 }
 
 /** 세션이 wait가 됐다. 기다리는 승인·질문이 있으면 그것을(아직 안 알렸으면), 없으면 일반 알림을 보낸다. */
@@ -165,12 +210,20 @@ async function handleWait(deps: NotifyDeps, bot: TelegramBot, sessionId: string,
 
 /** 수집·끊김 판정에서 바뀐 세션 상태들을 알린다. */
 export function notifySessionChanges(deps: NotifyDeps, changes: StatusChange[]): void {
-  if (!deps.telegram.bot) return;
   for (const c of changes) {
     if (c.to === 'wait') {
       deps.telegram.later(deps.telegram.waitGraceMs, '기다림 알림', (bot) => handleWait(deps, bot, c.sessionId, c.text));
+      deps.push.later(deps.push.waitGraceMs, '기다림 웹 알림', () => handleWaitPush(deps, c.sessionId, c.text));
     } else if (c.to === 'done' || c.to === 'lost') {
       const kind = c.to;
+      deps.push.enqueue(kind === 'done' ? '끝남 웹 알림' : '끊김 웹 알림', async () => {
+        const s = await loadSession(deps.sql, c.sessionId);
+        if (!s || s.status !== kind || !s.telegram) return;
+        if (!(await loadPushSettings(deps.sql, s.user_id))?.[kind]) return;
+        if (!deps.push.throttle(`${c.sessionId}:${kind}`, deps.now())) return;
+        const text = c.text ?? s.activity_text ?? '';
+        await sendPush(deps, s.user_id, kind === 'done' ? pushText.done(pushHeadOf(s), text) : pushText.lost(pushHeadOf(s), text));
+      });
       deps.telegram.enqueue(kind === 'done' ? '끝남 알림' : '끊김 알림', async (bot) => {
         const s = await loadSession(deps.sql, c.sessionId);
         if (!s || s.status !== kind || !s.telegram) return;
@@ -192,6 +245,24 @@ export function notifySessionChanges(deps: NotifyDeps, changes: StatusChange[]):
 
 /** 새 한도 기록이 들어왔다. 5시간·주간이 기준을 처음 넘으면(그 창이 초기화되기 전에는 한 번만) 알린다. */
 export function notifyLimits(deps: NotifyDeps, userId: string, l: LimitSnapshot): void {
+  deps.push.enqueue('한도 웹 알림', async () => {
+    const settings = await loadPushSettings(deps.sql, userId);
+    if (!settings?.limit) return;
+    const pct = settings.limitPct;
+    const [acct] = await deps.sql<{ alias: string | null }[]>`
+      SELECT alias FROM accounts WHERE user_id = ${userId} AND email = ${l.account}`;
+    const windows = [
+      { win: 'five' as const, pct: l.fiveHourPct, resets: l.fiveHourResetsAt },
+      { win: 'seven' as const, pct: l.sevenDayPct, resets: l.sevenDayResetsAt },
+    ];
+    for (const w of windows) {
+      if (w.pct < pct) continue;
+      if (!(await pushOnce(deps.sql, userId, `limit:${l.account}:${w.win}:${w.resets ?? 0}`, deps.now()))) continue;
+      await sendPush(deps, userId, pushText.limit({
+        account: acct?.alias ? `${acct.alias} (${l.account})` : l.account, window: w.win, pct: w.pct, limitPct: pct,
+      }));
+    }
+  });
   if (!deps.telegram.bot) return;
   deps.telegram.enqueue('한도 알림', async (bot) => {
     const target = await loadTarget(deps.sql, userId);
@@ -223,13 +294,18 @@ export function notifyLimits(deps: NotifyDeps, userId: string, l: LimitSnapshot)
 
 // ── 가입 신청 ───────────────────────────────────────────
 
-/** 가입 신청(pending 사용자)이 생겼다 → 텔레그램을 연결한 관리자 모두에게. */
+/** 가입 신청(동의를 마친 pending 사용자)이 생겼다 → 텔레그램을 연결한 관리자와 웹 푸시를 구독한 관리자 모두에게. */
 export function notifySignup(deps: NotifyDeps, user: { email: string; name: string | null }): void {
+  deps.push.enqueue('가입 신청 웹 알림', async () => {
+    const admins = await deps.sql<{ id: string }[]>`
+      SELECT id FROM users WHERE role = 'admin' AND status = 'active' AND delete_at IS NULL`;
+    for (const a of admins) await sendPush(deps, a.id, pushText.signup(user));
+  });
   if (!deps.telegram.bot) return;
   deps.telegram.enqueue('가입 신청 알림', async (bot) => {
     const admins = await deps.sql<{ user_id: string; chat_id: string }[]>`
       SELECT l.user_id, l.chat_id FROM telegram_links l JOIN users u ON u.id = l.user_id
-      WHERE u.role = 'admin' AND u.status = 'active'`;
+      WHERE u.role = 'admin' AND u.status = 'active' AND u.delete_at IS NULL`;
     for (const a of admins) {
       try {
         await sendTracked(deps, bot, {
@@ -240,5 +316,20 @@ export function notifySignup(deps: NotifyDeps, user: { email: string; name: stri
         console.error('[telegram] 가입 신청 알림 실패:', errorLine(err, bot.token));
       }
     }
+  });
+}
+
+// ── 저장 용량 정리 ──────────────────────────────────────
+
+/** 저장 용량 한도를 넘어 오래된 대화를 지웠다 → 그 사용자에게(항목 설정과 상관없이). */
+export function notifyTrim(deps: NotifyDeps, userId: string, t: { lines: number; quotaMb: number }): void {
+  deps.push.enqueue('용량 정리 웹 알림', async () => {
+    await sendPush(deps, userId, pushText.trim(t));
+  });
+  if (!deps.telegram.bot) return;
+  deps.telegram.enqueue('용량 정리 알림', async (bot) => {
+    const target = await loadTarget(deps.sql, userId);
+    if (!target) return;
+    await sendTracked(deps, bot, { userId, chatId: target.chatId, sessionId: null, html: trimText(deps.config.publicUrl, t) });
   });
 }

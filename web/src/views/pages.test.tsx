@@ -1,4 +1,4 @@
-import type { MeResponse, UserView } from '@c-monitor/shared';
+import type { AdminUserView, MeResponse, UserView } from '@c-monitor/shared';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -36,6 +36,10 @@ vi.mock('../api/client', async (orig) => {
       telegram: { available: false, botUsername: null, linked: false, linkedName: null, linkedAt: null },
       settings: { wait: true, done: true, lost: true, limit: true, limitPct: 80 },
     })),
+    getPushSubscriptions: vi.fn(async () => []),
+    getMyStorage: vi.fn(async () => ({ bytes: 0, quotaMb: 1024, trimmedAt: null })),
+    getAdminMachines: vi.fn(async () => []),
+    getAdminStorage: vi.fn(async () => ({ totalBytes: 0, chatBytes: 0, usageBytes: 0, otherBytes: 0, diskFreeBytes: null, users: [] })),
     getAdminTelegram: vi.fn(async () => ({
       configured: false, botUsername: null, tokenHint: null, updatedAt: null, polling: 'off', lastError: null, linkedUsers: 0,
     })),
@@ -43,9 +47,12 @@ vi.mock('../api/client', async (orig) => {
 });
 
 const user = (o: Partial<UserView> = {}): UserView => ({
-  id: 'u1', email: 'admin@example.com', name: '관리자', role: 'admin', status: 'active', ...o,
+  id: 'u1', email: 'admin@example.com', name: '관리자', role: 'admin', status: 'active', consentedAt: '2026-11-01T00:00:00Z', deleteAt: null, ...o,
 });
 const meOf = (o: Partial<UserView> = {}): MeResponse => ({ user: user(o) });
+const adminRow = (o: Partial<AdminUserView> = {}): AdminUserView => ({
+  ...user(o), createdAt: '2026-11-01T00:00:00Z', lastLoginAt: null, quotaMb: 1024, bytes: 0, machines: 0, invited: false, ...o,
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -288,9 +295,9 @@ describe('관리자', () => {
   it('승인 대기 목록에서 승인하고, 사용자를 정지한다', async () => {
     const u = userEvent.setup();
     vi.mocked(api.getAdminUsers).mockResolvedValue([
-      user(),
-      user({ id: 'u2', email: 'new@gmail.com', role: 'user', status: 'pending' }),
-      user({ id: 'u3', email: 'old@gmail.com', role: 'user', status: 'active' }),
+      adminRow(),
+      adminRow({ id: 'u2', email: 'new@gmail.com', role: 'user', status: 'pending' }),
+      adminRow({ id: 'u3', email: 'old@gmail.com', role: 'user', status: 'active' }),
     ]);
     render(<AdminUsers me={meOf()} />);
     const pending = await screen.findByRole('region', { name: '승인 대기' });

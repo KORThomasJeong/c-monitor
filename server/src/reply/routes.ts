@@ -1,26 +1,25 @@
 // 원격 답장(2차). 계약: shared/src/contract.ts "원격 답장(2차)".
-//   기기 토큰  POST /api/reply/ask · /api/reply/wait · /api/reply/inbox
+//   기기 토큰  POST /api/reply/ask · /api/reply/wait · /api/reply/inbox · /api/reply/inbox/ack(3차)
 //   로그인     POST /api/sessions/:id/reply · PATCH /api/machines/:id
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import type { ZodType, ZodTypeDef } from 'zod';
 import {
   MAX_BATCH_BYTES, MachinePatchSchema, REPLY_POLL_SECONDS,
-  ReplyAskSchema, ReplyInboxSchema, ReplyRequestSchema, ReplyWaitSchema,
+  ReplyAskSchema, ReplyInboxAckSchema, ReplyInboxSchema, ReplyRequestSchema, ReplyWaitSchema,
+  type ReplyInboxAckResponse,
   type ReplyAnswer, type ReplyAskResponse, type ReplyInboxResponse, type ReplyResponse, type ReplyWaitResponse,
   type SessionStatus,
 } from '@c-monitor/shared';
 import { machineGuard, requireMachine, requireUser, userGuard } from '../auth/guard';
-import { loadMachineViews, publishSessions } from '../query/views';
+import { setRemoteReply } from '../device/remote';
+import { publishSessions } from '../query/views';
 import type { Deps, Env } from '../types';
 import { fail, parseJsonBody, readLimitedText } from '../util';
 import { notifyRequest } from '../notify/notify';
 import { submitReply } from './answer';
-import { tryDeliver } from './deliver';
+import { ackMessage, tryDeliver } from './deliver';
 import { statusCanReply } from './pending';
-
-/** 스위치를 바꿀 때 다시 내보내는 세션 수의 상한. */
-const MACHINE_SESSION_LIMIT = 500;
 
 type RequestState = { status: 'pending' | 'answered' | 'gone'; answer: ReplyAnswer | null };
 
@@ -140,6 +139,14 @@ export function replyRoutes(deps: Deps): Hono<Env> {
     return c.json<ReplyInboxResponse>(await waiter.promise);
   });
 
+  // 글을 세션에 넘겼다는 확인(0.3.0 이상 플러그인). 이때 전달 완료로 적고 본문을 지운다. 모르는 id는 404.
+  app.post('/api/reply/inbox/ack', machine, async (c) => {
+    const m = requireMachine(c);
+    const body = await readLimited(c.req.raw, ReplyInboxAckSchema);
+    if (!(await ackMessage(deps, m.id, `${m.id}:${body.sessionId}`, body.id))) throw fail(404, 'not_found');
+    return c.json<ReplyInboxAckResponse>({ ok: true });
+  });
+
   // ── 로그인 경로 ─────────────────────────────────────────
 
   // 웹에서 답 보내기. 세션 소유자 본인만(관리자도 남의 것은 404).
@@ -148,7 +155,7 @@ export function replyRoutes(deps: Deps): Hono<Env> {
     const id = c.req.param('id');
     const body = await readLimited(c.req.raw, ReplyRequestSchema);
 
-    const result = await submitReply(deps, user.id, id, body);
+    const result = await submitReply(deps, user.id, id, body, 'web');
     if (!result.ok) {
       const status = result.error === 'not_found' ? 404 : result.error === 'invalid_body' ? 400 : 409;
       throw fail(status, result.error);
@@ -161,27 +168,8 @@ export function replyRoutes(deps: Deps): Hono<Env> {
     const user = requireUser(c);
     const machineId = c.req.param('id');
     const { remoteReply } = await readLimited(c.req.raw, MachinePatchSchema);
-    const rows = await sql`
-      UPDATE machines SET remote_reply = ${remoteReply}
-      WHERE id = ${machineId} AND user_id = ${user.id} AND revoked_at IS NULL RETURNING id`;
-    if (rows.length === 0) throw fail(404, 'not_found');
-
-    if (!remoteReply) {
-      // 끄면 기다리던 승인·질문은 gone, 아직 전달하지 않은 글은 버린다(나중에 켰을 때 옛 글이 튀어나오지 않게).
-      const gone = await sql<{ id: string }[]>`
-        UPDATE reply_requests SET status = 'gone' WHERE machine_id = ${machineId} AND status = 'pending' RETURNING id`;
-      await sql`DELETE FROM session_messages WHERE machine_id = ${machineId} AND delivered_at IS NULL`;
-      hub.notifyRequests(gone.map((r) => r.id));
-      hub.dropInbox({ machineId });
-    }
-
-    const [view] = await loadMachineViews(sql, user.id, deps.now(), { id: machineId });
-    deps.bus.publish(user.id, { type: 'machine', machine: view! });
-    // 그 컴퓨터 세션들의 canReply·pending이 달라지므로 함께 다시 내보낸다.
-    const sessions = await sql<{ id: string }[]>`
-      SELECT id FROM sessions WHERE machine_id = ${machineId} AND status <> 'end'
-      ORDER BY last_event_at DESC LIMIT ${MACHINE_SESSION_LIMIT}`;
-    await publishSessions(deps, sessions.map((r) => r.id));
+    const view = await setRemoteReply(deps, user.id, machineId, remoteReply);
+    if (!view) throw fail(404, 'not_found');
     return c.json(view);
   });
 

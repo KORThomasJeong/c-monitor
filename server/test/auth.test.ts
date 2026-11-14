@@ -99,8 +99,11 @@ describe('가입 승인', () => {
     };
     expect(list.users.find((u) => u.id === id)).toMatchObject({ email: 'join@example.com', status: 'pending' });
 
+    // 가입 고지에 동의해야 승인 대기 수에 들어간다.
+    const before = ((await (await h.req('GET', '/api/me', { cookie: admin })).json()) as MeResponse).pendingCount!;
+    expect((await h.req('POST', '/api/me/consent', { cookie })).status).toBe(200);
     const me = (await (await h.req('GET', '/api/me', { cookie: admin })).json()) as MeResponse;
-    expect(me.pendingCount).toBeGreaterThanOrEqual(1);
+    expect(me.pendingCount).toBe(before + 1);
 
     expect((await h.req('POST', `/api/admin/users/${id}/approve`, { cookie: admin })).status).toBe(200);
     expect((await h.req('GET', '/api/sessions', { cookie })).status).toBe(200);
