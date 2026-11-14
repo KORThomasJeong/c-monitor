@@ -1,7 +1,8 @@
 // 상태줄 래퍼: 원래 명령 출력은 바이트 그대로, 한도는 60초에 한 번만.
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { osLabel } from '../lib/os.mjs';
 import { BIN, closedPort, makeSandbox, runNode, startServer } from './helpers.mjs';
 
 let sb;
@@ -131,5 +132,54 @@ describe('statusline.mjs', () => {
     connect('http://127.0.0.1:1', { type: 'command', command: orig.command });
     const r = await runNode(wrapper, [], { env: sb.env, input: '깨진 입력' });
     expect(r.stdout.equals(ORIGINAL_BYTES)).toBe(true);
+  });
+
+  it('운영체제 표기가 lib/os.mjs의 osLabel()과 같다(래퍼 안의 복제본 확인)', async () => {
+    const server = await startServer();
+    try {
+      connect(server.url, null);
+      await runNode(wrapper, [], { env: sb.env, input: statusInput(LIMITS) });
+      expect(server.requests[0].body.machine.os).toBe(osLabel());
+      expect(osLabel()).not.toMatch(/^(win32|darwin|linux) /);
+    } finally { await server.close(); }
+  });
+
+  it('401(서버에서 연결 해제)이면 해제 표시를 남기고 큐를 비우며, 그 뒤로는 보내지 않되 원래 상태줄은 그대로 보인다', async () => {
+    const server = await startServer(() => ({ status: 401, json: { error: 'unauthorized' } }));
+    try {
+      const orig = makeOriginal();
+      connect(server.url, { type: 'command', command: orig.command });
+      const queue = join(sb.statusHome, 'queue');
+      mkdirSync(queue, { recursive: true });
+      writeFileSync(join(queue, '0000000000001-000001-x.json'), JSON.stringify({ events: [], transcript: [] }));
+
+      const a = await runNode(wrapper, [], { env: sb.env, input: statusInput(LIMITS) });
+      expect(a.code).toBe(0);
+      expect(a.stdout.equals(ORIGINAL_BYTES)).toBe(true);
+      expect(server.requests.length).toBe(1);
+      const cfg = JSON.parse(readFileSync(join(sb.statusHome, 'config.json'), 'utf8'));
+      expect(new Date(cfg.revokedAt).toISOString()).toBe(cfg.revokedAt);
+      expect(cfg).toMatchObject({ server: server.url, token: 'tok-1', machineName: '집 PC' });
+      expect(cfg.originalStatusLine.command).toBe(orig.command);
+      expect(readdirSync(queue).filter((f) => f.endsWith('.json'))).toEqual([]);
+
+      // 60초 제한과 상관없이, 해제 표시가 있으면 보내지 않는다.
+      const stateFile = join(sb.statusHome, 'state', 'limits.json');
+      if (existsSync(stateFile)) writeFileSync(stateFile, '{}');
+      const b = await runNode(wrapper, [], { env: sb.env, input: statusInput(LIMITS) });
+      expect(b.code).toBe(0);
+      expect(b.stdout.equals(ORIGINAL_BYTES)).toBe(true);
+      expect(server.requests.length).toBe(1);
+    } finally { await server.close(); }
+  });
+
+  it('403(사용자 정지)은 해제로 보지 않는다', async () => {
+    const server = await startServer(() => ({ status: 403, json: { error: 'suspended' } }));
+    try {
+      connect(server.url, null);
+      await runNode(wrapper, [], { env: sb.env, input: statusInput(LIMITS) });
+      expect(server.requests.length).toBe(1);
+      expect(JSON.parse(readFileSync(join(sb.statusHome, 'config.json'), 'utf8')).revokedAt).toBeUndefined();
+    } finally { await server.close(); }
   });
 });

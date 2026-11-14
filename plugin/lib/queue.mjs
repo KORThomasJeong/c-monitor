@@ -27,6 +27,12 @@ export function queueSize() {
   return listFiles().length;
 }
 
+/** 큐에 남은 묶음을 모두 버린다(서버가 연결을 해제해 보낼 곳이 없어졌을 때). */
+export function clearQueue() {
+  const dir = queueDir();
+  for (const name of listFiles()) rmSync(join(dir, name), { force: true });
+}
+
 /** 묶음 하나를 큐 끝에 넣는다. */
 export function enqueue(batch) {
   const dir = queueDir();

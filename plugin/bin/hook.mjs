@@ -2,13 +2,14 @@
 // 훅 진입점. 클로드코드가 훅 이벤트마다 stdin으로 JSON을 넘겨 실행한다.
 // 원칙: 클로드코드를 절대 막지 않는다 — stdout에 아무것도 쓰지 않고, 항상 0으로, 3초 조금 넘는 시간 안에 끝난다.
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { hostname, platform, release } from 'node:os';
+import { hostname } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readAccount } from '../lib/account.mjs';
-import { loadConfig, pluginVersion, readJson, stateDir, writeJsonAtomic } from '../lib/config.mjs';
+import { loadConfig, markRevoked, pluginVersion, readJson, stateDir, writeJsonAtomic } from '../lib/config.mjs';
 import { maskDeep } from '../lib/mask.mjs';
-import { enqueue, flush, splitBatches } from '../lib/queue.mjs';
+import { osLabel } from '../lib/os.mjs';
+import { clearQueue, enqueue, flush, splitBatches } from '../lib/queue.mjs';
 import { postJson } from '../lib/send.mjs';
 import { readTranscriptDelta } from '../lib/transcript.mjs';
 
@@ -100,7 +101,7 @@ function buildData(input) {
 function machineInfo(cfg) {
   return {
     name: String(cfg.machineName || hostname() || 'unknown').slice(0, 100),
-    os: `${platform()} ${release()}`.slice(0, 100),
+    os: osLabel(), // 연결할 때 등록한 것과 같은 표기
     pluginVersion: pluginVersion().slice(0, 40),
   };
 }
@@ -111,6 +112,7 @@ async function main() {
   const raw = await readStdin();
   const cfg = loadConfig();
   if (!cfg) return; // 연결 전이면 아무것도 하지 않는다
+  if (cfg.revokedAt) return; // 서버에서 연결을 해제했으면 쌓지도 보내지도 않는다(다시 연결하면 풀린다)
 
   let input;
   try {
@@ -162,15 +164,22 @@ async function main() {
 
   const machine = machineInfo(cfg);
   const url = `${cfg.server.replace(/\/+$/, '')}/api/ingest`;
+  let revoked = false;
   await flush(async (batch) => {
     const remaining = DEADLINE - Date.now();
     if (remaining < 200) return false;
     const r = await postJson(url, { machine, ...batch }, cfg.token, Math.min(REQUEST_TIMEOUT_MS, remaining));
     if (r.ok) return true;
-    // 모양이 틀렸거나 너무 큰 묶음은 다시 보내도 같으므로 버린다. 그 밖(서버 꺼짐·401·5xx)은 큐에 남긴다.
+    // 모양이 틀렸거나 너무 큰 묶음은 다시 보내도 같으므로 버린다.
     if (r.status === 400 || r.status === 413 || r.status === 422) return 'drop';
+    // 401 = 서버에서 이 기기의 연결을 해제했다. 여기서 멈추고 아래에서 큐를 비운다.
+    if (r.status === 401) revoked = true;
+    // 그 밖(서버 꺼짐·403 사용자 정지·5xx)은 큐에 남겨 다음에 이어서 보낸다.
     return false;
   }, { deadline: DEADLINE, lockWaitMs: 1500 });
+
+  // 연결이 해제됐으면 표시를 남기고 남은 묶음을 버린다. 그 사이 다시 연결했다면(토큰이 바뀜) 손대지 않는다.
+  if (revoked && markRevoked(cfg.token)) clearQueue();
 }
 
 // 무슨 일이 있어도 조용히 0으로 끝낸다.

@@ -6,7 +6,7 @@
 import { spawn } from 'node:child_process';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, hostname, platform, release } from 'node:os';
 import { join } from 'node:path';
 
@@ -42,17 +42,48 @@ function readAccount() {
   return typeof email === 'string' && email.length > 0 ? email.slice(0, 320) : null;
 }
 
+// lib/os.mjs 의 osLabel()과 같아야 한다(이 파일은 lib를 import할 수 없어 복제해 둔다. test/statusline.test.mjs가 확인한다).
+const OS_NAMES = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' };
+const osLabel = () => `${OS_NAMES[platform()] ?? platform()} ${release()}`.slice(0, 100);
+
+/**
+ * 서버가 연결을 해제했다(401)고 설정에 표시하고 큐에 남은 묶음을 버린다.
+ * lib/config.mjs 의 markRevoked() + lib/queue.mjs 의 clearQueue()와 같아야 한다.
+ */
+function markRevoked(token) {
+  const path = join(home, 'config.json');
+  const cfg = readJson(path);
+  // 그 사이 다시 연결해 토큰이 바뀌었으면 새 연결을 건드리지 않는다.
+  if (!cfg || typeof cfg !== 'object' || cfg.token !== token) return;
+  if (!cfg.revokedAt) {
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ ...cfg, revokedAt: new Date().toISOString() }, null, 2) + '\n', { mode: 0o600 });
+    try {
+      renameSync(tmp, path);
+    } catch (err) {
+      rmSync(tmp, { force: true });
+      throw err;
+    }
+  }
+  const queue = join(home, 'queue');
+  let files = [];
+  try {
+    files = readdirSync(queue).filter((f) => f.endsWith('.json'));
+  } catch { /* 큐 폴더가 없음 */ }
+  for (const name of files) rmSync(join(queue, name), { force: true });
+}
+
 const pct = (v) => (Number.isFinite(v) ? Math.min(100, Math.max(0, v)) : 0);
 const epoch = (v) => (Number.isFinite(v) ? Math.round(v) : null);
 
 /**
- * JSON을 보낸다(결과는 쓰지 않는다). 전역 fetch 대신 node:http/https — Windows의 Node 26에서
+ * JSON을 보낸다. → 응답 상태 코드(닿지 않았거나 제한시간을 넘기면 0). 전역 fetch 대신 node:http/https — Windows의 Node 26에서
  * fetch 뒤에 process.exit()을 부르면 프로세스가 비정상 종료하기 때문이다.
  */
 function post(url, body, token) {
   return new Promise((done) => {
     let req = null;
-    const stop = () => { try { req?.destroy(); } catch { /* 무시 */ } done(); };
+    const stop = () => { try { req?.destroy(); } catch { /* 무시 */ } done(0); };
     const timer = setTimeout(stop, SEND_TIMEOUT_MS);
     try {
       const target = new URL(url);
@@ -64,10 +95,10 @@ function post(url, body, token) {
         headers: { 'content-type': 'application/json', 'content-length': payload.length, authorization: `Bearer ${token}` },
       }, (res) => {
         res.resume();
-        res.on('end', () => { clearTimeout(timer); done(); });
-        res.on('error', () => { clearTimeout(timer); done(); });
+        res.on('end', () => { clearTimeout(timer); done(res.statusCode ?? 0); });
+        res.on('error', () => { clearTimeout(timer); done(0); });
       });
-      req.on('error', () => { clearTimeout(timer); done(); });
+      req.on('error', () => { clearTimeout(timer); done(0); });
       req.end(payload);
     } catch {
       clearTimeout(timer);
@@ -80,6 +111,7 @@ function post(url, body, token) {
 async function sendLimits(cfg, input) {
   try {
     if (!cfg || typeof cfg.server !== 'string' || typeof cfg.token !== 'string') return;
+    if (cfg.revokedAt) return; // 서버에서 연결을 해제했으면 보내지 않는다(다시 연결하면 풀린다)
     const limits = input?.rate_limits;
     if (!limits || typeof limits !== 'object') return;
     const five = limits.five_hour;
@@ -102,7 +134,7 @@ async function sendLimits(cfg, input) {
     const body = {
       machine: {
         name: String(cfg.machineName || hostname() || 'unknown').slice(0, 100),
-        os: `${platform()} ${release()}`.slice(0, 100),
+        os: osLabel(),
         pluginVersion: String(cfg.pluginVersion || '0.0.0').slice(0, 40),
       },
       events: [],
@@ -117,7 +149,8 @@ async function sendLimits(cfg, input) {
         at: new Date(now).toISOString(),
       },
     };
-    await post(`${cfg.server.replace(/\/+$/, '')}/api/ingest`, body, cfg.token);
+    const status = await post(`${cfg.server.replace(/\/+$/, '')}/api/ingest`, body, cfg.token);
+    if (status === 401) markRevoked(cfg.token); // 403(사용자 정지)은 해제가 아니다
   } catch { /* 한도 전송 실패는 상태줄에 영향을 주지 않는다 */ }
 }
 

@@ -71,7 +71,8 @@ beforeAll(async () => {
     join(configDir, 'settings.json'),
     JSON.stringify({ model: 'opus', statusLine: { type: 'command', command: `node -e "process.stdout.write('HUD-OK')"` } }),
   );
-  env = { ...process.env, C_MONITOR_HOME: join(root, 'cm'), CLAUDE_CONFIG_DIR: configDir, HOME: root, USERPROFILE: root };
+  // C_MONITOR_NO_OPEN: 연결 명령이 실제 브라우저를 열지 않게 한다.
+  env = { ...process.env, C_MONITOR_HOME: join(root, 'cm'), CLAUDE_CONFIG_DIR: configDir, HOME: root, USERPROFILE: root, C_MONITOR_NO_OPEN: '1' };
 
   owner = await h.activeUser('owner@example.com');
 }, 60_000);

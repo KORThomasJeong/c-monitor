@@ -1,7 +1,8 @@
 // 훅 진입점을 실제 자식 프로세스로 돌려 본다(계획 Review Focus 1).
-import { appendFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { osLabel } from '../lib/os.mjs';
 import { BIN, closedPort, makeSandbox, runNode, startServer } from './helpers.mjs';
 
 const HOOK = BIN('hook.mjs');
@@ -19,6 +20,7 @@ afterEach(() => sb.cleanup());
 const connect = (server) => writeFileSync(join(sb.statusHome, 'config.json'), JSON.stringify({
   server, token: 'tok-1', machineId: 'm-1', machineName: '집 PC', originalStatusLine: null,
 }));
+const readConfig = () => JSON.parse(readFileSync(join(sb.statusHome, 'config.json'), 'utf8'));
 const queueFiles = () => {
   const dir = join(sb.statusHome, 'queue');
   return existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.json')) : [];
@@ -183,16 +185,57 @@ describe('hook.mjs', () => {
     } finally { await server.close(); }
   });
 
-  it('서버가 400·413으로 거절한 묶음은 버리고, 401이면 큐에 남긴다', async () => {
+  it('서버가 400·413으로 거절한 묶음은 버리고, 403(사용자 정지)이면 큐에 남긴다', async () => {
     let status = 400;
     const server = await startServer(() => ({ status, json: {} }));
     try {
       connect(server.url);
       await run(hookInput('Stop'));
       expect(queueFiles()).toEqual([]);
-      status = 401;
+      status = 403;
       await run(hookInput('Stop'));
       expect(queueFiles().length).toBe(1);
+      expect(readConfig().revokedAt).toBeUndefined();
+      // 정지가 풀리면 이어서 보낸다.
+      status = 200;
+      await run(hookInput('Stop'));
+      expect(queueFiles()).toEqual([]);
+    } finally { await server.close(); }
+  });
+
+  it('401(서버에서 연결 해제)이면 큐를 비우고 해제 표시를 남기며, 그 뒤로는 아무것도 보내지 않는다', async () => {
+    let status = 403;
+    const server = await startServer(() => ({ status, json: {} }));
+    try {
+      connect(server.url);
+      await run(hookInput('Stop')); // 큐에 하나 남겨 둔다
+      expect(queueFiles().length).toBe(1);
+
+      status = 401;
+      const r = await run(hookInput('Stop'));
+      expect(r.code).toBe(0);
+      expect(r.stdout.length).toBe(0);
+      expect(queueFiles()).toEqual([]); // 방금 묶음과 남아 있던 묶음 모두 버린다
+      const cfg = readConfig();
+      expect(new Date(cfg.revokedAt).toISOString()).toBe(cfg.revokedAt);
+      expect(cfg).toMatchObject({ server: server.url, token: 'tok-1', machineName: '집 PC' }); // 나머지는 그대로
+
+      const sentSoFar = server.requests.length;
+      say('user', '해제된 뒤의 질문');
+      const after = await run(hookInput('UserPromptSubmit', { prompt: '해제된 뒤의 질문' }));
+      expect(after.code).toBe(0);
+      expect(after.stdout.length).toBe(0);
+      expect(server.requests.length).toBe(sentSoFar);
+      expect(queueFiles()).toEqual([]);
+    } finally { await server.close(); }
+  });
+
+  it('운영체제는 연결할 때와 같은 표기(osLabel)로 보낸다', async () => {
+    const server = await startServer();
+    try {
+      connect(server.url);
+      await run(hookInput('Stop'));
+      expect(server.requests[0].body.machine.os).toBe(osLabel());
     } finally { await server.close(); }
   });
 });

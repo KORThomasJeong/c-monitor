@@ -24,6 +24,8 @@ export function makeSandbox() {
     // 혹시 기본 경로로 떨어져도 실제 홈을 건드리지 않게 홈도 임시 폴더로 바꾼다.
     HOME: root,
     USERPROFILE: root,
+    // 연결 명령이 실제 브라우저를 여는 일이 절대 없게 한다.
+    C_MONITOR_NO_OPEN: '1',
   };
   return { root, statusHome, configDir, env, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }

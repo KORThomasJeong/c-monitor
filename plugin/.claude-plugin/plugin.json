@@ -1,6 +1,6 @@
 {
   "name": "c-monitor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "클로드코드 세션 현황을 c-monitor 서버로 보냅니다",
   "author": {
     "name": "KORThomasJeong"
