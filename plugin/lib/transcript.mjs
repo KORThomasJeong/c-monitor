@@ -1,6 +1,7 @@
 // 클로드코드 transcript(JSONL)를 증분으로 읽어 계약의 TranscriptLine으로 바꾼다.
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { maskDeep, maskSecrets } from './mask.mjs';
+import { WAKE_PREFIX } from './reply.mjs';
 
 /** 한 줄 글의 최대 크기(바이트). shared/src/contract.ts 의 MAX_LINE_BYTES 와 같아야 한다. */
 export const MAX_LINE_BYTES = 64 * 1024;
@@ -83,6 +84,29 @@ function makeLine(role, at, rawText, extra = {}) {
   return line;
 }
 
+/** 클로드코드가 넣은 사용자 줄인가(사람이 친 글이 아님) */
+function isInjected(entry) {
+  return entry.promptSource === 'system' || entry.origin?.kind === 'task-notification' || entry.turnOrigin === 'task_notification';
+}
+
+/** 웹 대시보드에서 보낸 글로 세션을 깨운 줄이면 그 글만 돌려준다. 아니면 null. */
+export function wakeMessage(text) {
+  const at = text.indexOf(WAKE_PREFIX);
+  if (at < 0) return null;
+  let body = text.slice(at + WAKE_PREFIX.length).replace(/^\s+/, '');
+  const end = body.lastIndexOf('</system-reminder>');
+  if (end >= 0) body = body.slice(0, end);
+  body = body.trim();
+  return body.length > 0 ? body : null;
+}
+
+/** 그 밖의 주입된 줄은 태그를 걷어 내고 짧게(요약이 있으면 요약) */
+function injectedSummary(text) {
+  const summary = /<summary>([\s\S]*?)<\/summary>/.exec(text)?.[1]?.trim();
+  if (summary) return summary.slice(0, 300);
+  return text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300);
+}
+
 /**
  * transcript JSONL 한 줄(파싱한 객체)을 TranscriptLine 0개 이상으로 바꾼다.
  * toolNames: tool_use id → 도구 이름. tool_result에 이름을 붙이는 데 쓴다(같은 읽기 안에서만 유지).
@@ -99,7 +123,15 @@ export function convertEntry(entry, toolNames = new Map()) {
   const lines = [];
 
   if (typeof content === 'string') {
-    if (content.trim().length > 0) lines.push(makeLine(entry.type, at, content));
+    if (content.trim().length === 0) return lines;
+    // 클로드코드가 스스로 넣은 사용자 줄(훅 결과·백그라운드 작업 알림 등). 사람이 쓴 글이 아니다.
+    if (entry.type === 'user' && isInjected(entry)) {
+      const wake = wakeMessage(content);
+      if (wake !== null) lines.push(makeLine('user', at, wake, { remote: true }));
+      else lines.push(makeLine('system', at, injectedSummary(content)));
+      return lines;
+    }
+    lines.push(makeLine(entry.type, at, content));
     return lines;
   }
   if (!Array.isArray(content)) return lines;

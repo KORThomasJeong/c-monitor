@@ -154,3 +154,27 @@ describe('readTranscriptDelta', () => {
     expect(r.state.seq).toBe(11);
   });
 });
+
+describe('클로드코드가 넣은 사용자 줄', () => {
+  const at = '2026-11-14T13:29:43.035Z';
+  const injected = (content) => ({ type: 'user', promptSource: 'system', origin: { kind: 'task-notification' }, timestamp: at, message: { role: 'user', content } });
+
+  it('웹에서 보낸 글로 깨운 줄은 그 글만 사용자 줄로 남긴다', () => {
+    const content = '<task-notification>\n<summary>Stop hook feedback</summary>\n</task-notification>\n<system-reminder>\n'
+      + 'Stop hook blocking error from command "Stop": [c-monitor] 사용자가 웹 대시보드에서 보낸 메시지입니다. 사용자의 다음 요청으로 받아들여 처리하세요.\n\n'
+      + '테스트를 돌려 줘\n둘째 줄\n</system-reminder>';
+    expect(convertEntry(injected(content))).toEqual([{ role: 'user', at, text: '테스트를 돌려 줘\n둘째 줄' }]);
+  });
+
+  it('그 밖의 주입 줄은 태그를 걷어 낸 시스템 줄로', () => {
+    expect(convertEntry(injected('<task-notification><summary>Background command finished</summary></task-notification>')))
+      .toEqual([{ role: 'system', at, text: 'Background command finished' }]);
+    expect(convertEntry(injected('<system-reminder>\n어떤   알림\n</system-reminder>')))
+      .toEqual([{ role: 'system', at, text: '어떤 알림' }]);
+  });
+
+  it('사람이 친 글은 그대로', () => {
+    expect(convertEntry({ type: 'user', timestamp: at, message: { role: 'user', content: '<b>태그</b> 그대로' } }))
+      .toEqual([{ role: 'user', at, text: '<b>태그</b> 그대로' }]);
+  });
+});
