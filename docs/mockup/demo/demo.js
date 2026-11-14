@@ -1,0 +1,765 @@
+/*
+ * C-Monitor 화면 데모용 가짜 서버.
+ *
+ * 앱(React)보다 먼저 실행돼 window.fetch와 window.EventSource를 가로채고,
+ * 지어낸 예시 데이터로 서버 API에 계약(shared/src/contract.ts)대로 답한다.
+ * 실제 서버와는 전혀 연결되지 않는다. 모든 이메일·컴퓨터·프로젝트 이름은 지어낸 값이다.
+ *
+ * 주소 쿼리로 시작 화면을 고른다.
+ *   app.html?view=/settings&theme=dark&mode=deck&user=admin&sel=search-api
+ *   - view  : / · /login · /pending · /connect?code=… · /settings · /admin
+ *   - theme : light | dark            (앱이 기억하는 테마 값을 덮어쓴다)
+ *   - mode  : detail | deck           (대시보드 상세 / 간단히 보기)
+ *   - user  : admin | user | pending  (로그인한 사람의 권한·상태, 기본 admin)
+ *   - sel   : 세션 이름 또는 id       (대시보드에서 그 세션 상세를 연다)
+ *
+ * 앱은 location.pathname으로 화면을 고르므로 여기서 history.replaceState로 주소를 view 값으로 바꾼다.
+ * 그러면 상대 경로 자산이 엉뚱한 곳을 가리키게 되므로, 빌드 스크립트가 넣어 둔 자산 목록
+ * (window.__CMON_DEMO_ASSETS__)을 원래 주소 기준 절대 주소로 바꿔 직접 불러온다.
+ */
+(function () {
+  'use strict';
+
+  // ── 시작 설정 ───────────────────────────────────────────
+  var BASE = new URL('.', location.href).href;
+  var params = new URLSearchParams(location.search);
+  var THEME_KEY = 'cs-theme';
+  var MODE_KEY = 'cs-mode';
+  var ALLOWED = ['/', '/login', '/pending', '/connect', '/settings', '/admin'];
+
+  var startView = (function () {
+    var raw = params.get('view') || '/';
+    if (raw.charAt(0) !== '/' || raw.charAt(1) === '/') raw = '/';
+    var u = new URL(raw, 'http://demo.invalid');
+    if (ALLOWED.indexOf(u.pathname) < 0) return '/';
+    return u.pathname + u.search + u.hash;
+  })();
+  var startPath = startView.split(/[?#]/)[0];
+  var userKind = ['admin', 'user', 'pending'].indexOf(params.get('user')) >= 0 ? params.get('user') : 'admin';
+  var selWanted = params.get('sel');
+
+  function store(key, value) {
+    try { localStorage.setItem(key, value); } catch (e) { /* 사생활 보호 모드 등 */ }
+  }
+  var theme = params.get('theme');
+  if (theme === 'light' || theme === 'dark') store(THEME_KEY, theme);
+  var mode = params.get('mode');
+  if (selWanted) mode = 'detail';
+  if (mode === 'detail' || mode === 'deck') store(MODE_KEY, mode);
+  else if (startPath === '/' && params.has('view')) store(MODE_KEY, 'detail');
+
+  // ── 시간 도우미 ─────────────────────────────────────────
+  var T0 = Date.now();
+  var MIN = 60000;
+  function iso(ms) { return new Date(ms).toISOString(); }
+  function ago(minutes) { return iso(T0 - minutes * MIN); }
+  function nowIso() { return iso(Date.now()); }
+  function sec(ms) { return Math.floor(ms / 1000); }
+  function clone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
+
+  // ── 예시 데이터(전부 지어낸 값) ─────────────────────────
+  var ACC_A = 'dev@company-a.example';
+  var ACC_B = 'dev@company-b.example';
+
+  var USERS = [
+    { id: 'u-admin', email: 'admin@example.com', name: '관리자', role: 'admin', status: 'active', createdAt: ago(60 * 24 * 40) },
+    { id: 'u-member', email: 'member@example.com', name: '홍길동', role: 'user', status: 'active', createdAt: ago(60 * 24 * 21) },
+    { id: 'u-design', email: 'designer@example.com', name: '성춘향', role: 'user', status: 'active', createdAt: ago(60 * 24 * 9) },
+    { id: 'u-new1', email: 'newcomer@example.com', name: '이몽룡', role: 'user', status: 'pending', createdAt: ago(35) },
+    { id: 'u-new2', email: 'intern@example.com', name: null, role: 'user', status: 'pending', createdAt: ago(60 * 5) },
+    { id: 'u-old', email: 'former@example.com', name: '심청', role: 'user', status: 'suspended', createdAt: ago(60 * 24 * 70) },
+  ];
+  var ME_BY_KIND = {
+    admin: 'u-admin',
+    user: 'u-member',
+    pending: 'u-new1',
+  };
+  var meId = ME_BY_KIND[userKind];
+  var loggedIn = startPath !== '/login';
+
+  var machines = [
+    { id: 'm-home', name: '집 PC', os: 'Windows 11', pluginVersion: '0.1.0', lastSeenAt: ago(0), online: true, remoteReply: false },
+    { id: 'm-srv', name: 'server-a', os: 'Ubuntu 24.04', pluginVersion: '0.1.0', lastSeenAt: ago(0.5), online: true, remoteReply: false },
+    { id: 'm-build', name: 'build-vm', os: 'Ubuntu 22.04', pluginVersion: '0.1.0', lastSeenAt: ago(1), online: true, remoteReply: false },
+    { id: 'm-cloud', name: 'cloud-box', os: 'Debian 12', pluginVersion: '0.1.0', lastSeenAt: ago(38), online: false, remoteReply: false },
+  ];
+
+  function history7(values) {
+    return values.map(function (v, i) { return { at: ago((values.length - 1 - i) * 24 * 60 + 30), sevenDayPct: v }; });
+  }
+  var accounts = [
+    {
+      email: ACC_A, alias: '회사', hidden: false,
+      fiveHourPct: 86, fiveHourResetsAt: sec(T0 + 107 * MIN),
+      sevenDayPct: 63, sevenDayResetsAt: sec(T0 + (3 * 24 * 60 + 5 * 60) * MIN),
+      at: ago(0.2), history: history7([21, 28, 34, 41, 47, 55, 63]),
+    },
+    {
+      email: ACC_B, alias: null, hidden: false,
+      fiveHourPct: 31, fiveHourResetsAt: sec(T0 + 200 * MIN),
+      sevenDayPct: 44, sevenDayResetsAt: sec(T0 + 5 * 24 * 60 * MIN),
+      at: ago(1), history: history7([12, 15, 22, 26, 31, 38, 44]),
+    },
+  ];
+
+  var settings = { lostMinutes: 10, endHours: 24, keepChatDays: 30, keepUsageDays: 90 };
+
+  function S(o) {
+    return Object.assign({
+      account: ACC_A, branch: 'main', model: 'claude-sonnet-4-5', status: 'run', seen: true,
+      endedAt: null, activity: null,
+    }, o, { id: 'demo-' + o.name });
+  }
+  var sessions = [
+    S({ name: 'search-api', machineId: 'm-home', cwd: 'D:\\work\\search-api', branch: 'fix/recency-rank', model: 'claude-opus-4-5',
+      status: 'wait', seen: false, startedAt: ago(46), lastEventAt: ago(0.4),
+      activity: { label: '알림', text: 'Claude needs your permission to use Bash' } }),
+    S({ name: 'blog-site', machineId: 'm-home', account: ACC_B, cwd: 'D:\\work\\blog-site', branch: 'feat/post-list',
+      status: 'wait', seen: true, startedAt: ago(22), lastEventAt: ago(2),
+      activity: { label: 'AskUserQuestion', text: '글 목록을 어떻게 나눌까요? (페이지 번호 / 무한 스크롤)' } }),
+    S({ name: 'data-pipeline', machineId: 'm-home', account: ACC_B, cwd: 'D:\\work\\data-pipeline', branch: 'main',
+      status: 'run', startedAt: ago(14), lastEventAt: ago(0.2),
+      activity: { label: 'Bash', text: 'python -m pipeline.run --date 2026-11-13' } }),
+    S({ name: 'drawing-review', machineId: 'm-srv', cwd: '/home/dev/drawing-review', branch: 'feat/pdf-report', model: 'claude-opus-4-5',
+      status: 'done', startedAt: ago(95), lastEventAt: ago(3),
+      activity: { label: '완료', text: 'PDF 리포트 기능을 마무리했습니다. 테스트 42개가 모두 통과했습니다.' } }),
+    S({ name: 'homepage', machineId: 'm-srv', account: ACC_B, cwd: '/home/dev/homepage', branch: 'redesign',
+      status: 'run', startedAt: ago(31), lastEventAt: ago(0.1),
+      activity: { label: 'Edit', text: 'src/components/Hero.astro' } }),
+    S({ name: 'api-gateway', machineId: 'm-build', cwd: '/srv/work/api-gateway', branch: 'refactor/auth-middleware', model: 'claude-opus-4-5',
+      status: 'run', startedAt: ago(128), lastEventAt: ago(0.3),
+      activity: { label: 'Bash', text: 'npm test -- --run auth' } }),
+    S({ name: 'report-batch', machineId: 'm-build', cwd: '/srv/work/report-batch', branch: 'main',
+      status: 'limit', seen: false, startedAt: ago(70), lastEventAt: ago(9),
+      activity: { label: '실패', text: 'rate_limit' } }),
+    S({ name: 'mobile-app', machineId: 'm-cloud', account: ACC_B, cwd: '/home/dev/mobile-app', branch: 'release/1.4',
+      status: 'lost', startedAt: ago(64), lastEventAt: ago(38),
+      activity: { label: 'Bash', text: 'npx expo export --platform android' } }),
+    S({ name: 'infra-scripts', machineId: 'm-cloud', cwd: '/home/dev/infra-scripts', branch: 'main',
+      status: 'end', startedAt: ago(240), lastEventAt: ago(185), endedAt: ago(185),
+      activity: { label: '종료', text: 'prompt_input_exit' } }),
+  ];
+
+  // ── 대화 기록 ───────────────────────────────────────────
+  var logs = {};
+  // 줄의 시각(at)은 다 만든 뒤 세션 시작~마지막 활동 사이에 고르게 나눠 붙인다(spreadTimes).
+  function Log(id) {
+    var lines = logs[id] = logs[id] || [];
+    var api = {
+      push: function (line) { line.seq = lines.length; lines.push(line); return api; },
+      u: function (text) { return api.push({ role: 'user', text: text }); },
+      a: function (text, _gap, extra) { return api.push(Object.assign({ role: 'assistant', text: text }, extra)); },
+      tu: function (name, input, extra) {
+        var summary = input.command || input.file_path || input.pattern || input.description || JSON.stringify(input);
+        return api.push(Object.assign({ role: 'tool', toolName: name, toolInput: input, text: summary }, extra));
+      },
+      tr: function (name, text, extra) { return api.push(Object.assign({ role: 'tool', toolName: name, text: text }, extra)); },
+    };
+    return api;
+  }
+  function spreadTimes() {
+    sessions.forEach(function (s) {
+      var lines = logs[s.id] || [];
+      var start = Date.parse(s.startedAt) + 20000;
+      var end = Date.parse(s.lastEventAt);
+      lines.forEach(function (l, i) {
+        l.at = iso(lines.length === 1 ? end : start + (end - start) * (i / (lines.length - 1)));
+      });
+    });
+  }
+
+  Log('demo-search-api', 45)
+    .u('검색 결과 순위가 이상해요. 최신 글이 너무 아래로 밀립니다. 원인을 찾아서 고쳐 주세요.')
+    .a('순위 계산 코드부터 살펴보겠습니다.')
+    .tu('Grep', { pattern: 'recencyBoost', path: 'src' })
+    .tr('Grep', 'src/rank/score.ts:42:  const recencyBoost = 0.02 * ageDays;')
+    .tu('Read', { file_path: 'src/rank/score.ts' })
+    .tr('Read', 'export function score(doc: Doc, q: Query): number {\n  const base = bm25(doc, q);\n  …')
+    .a('원인을 찾았습니다. 최신성 가중치가 글이 오래될수록 커지는 방향으로 더해지고 있어서, 오래된 글이 오히려 점수를 더 받습니다.\n\n부호를 바로잡고, 날짜가 지날수록 천천히 줄어드는 감쇠 함수로 바꾸겠습니다.', 40)
+    .tu('Edit', { file_path: 'src/rank/score.ts', old_string: 'const recencyBoost = 0.02 * ageDays;', new_string: 'const recencyBoost = Math.exp(-ageDays / 30);' })
+    .tr('Edit', 'The file src/rank/score.ts has been updated.')
+    .tu('Bash', { command: 'npm test -- rank', description: '순위 테스트 실행' })
+    .tr('Bash', ' ✓ src/rank/score.test.ts (12 tests) 38ms\n\n Test Files  1 passed (1)\n      Tests  12 passed (12)')
+    .a('순위 테스트 12개가 모두 통과했습니다. 최신 글이 위로 올라오는 것도 확인했습니다.')
+    .u('좋아요. 스테이징 DB에도 새 인덱스를 반영해 주세요.', 120)
+    .tu('Bash', { command: 'cat .env.staging' })
+    .tr('Bash', 'DATABASE_URL=postgres://app:••••••••@db.staging.internal:5432/search\nSEARCH_API_KEY=••••••••', { masked: 2 })
+    .a('스테이징 접속 정보를 확인했습니다. 비밀번호와 API 키는 이 컴퓨터에서 가린 뒤 보냈습니다. 이제 인덱스 마이그레이션을 실행하겠습니다.')
+    .tu('Bash', { command: 'npm run migrate -- --env staging', description: '스테이징 DB에 인덱스 마이그레이션 적용' });
+
+  Log('demo-blog-site', 21)
+    .u('블로그 글 목록 페이지를 새로 만들어 줘. 글이 200개가 넘어서 한 번에 다 보이면 느려.')
+    .a('지금 페이지 구성을 먼저 보겠습니다.')
+    .tu('Glob', { pattern: 'src/pages/**/*.astro' })
+    .tr('Glob', 'src/pages/index.astro\nsrc/pages/posts/[slug].astro\nsrc/pages/about.astro')
+    .tu('Read', { file_path: 'src/pages/index.astro' })
+    .tr('Read', '---\nimport { getCollection } from "astro:content";\nconst posts = await getCollection("blog");\n---')
+    .a('지금은 글 전체를 한 페이지에 그리고 있습니다. 나눠 보여 주는 방법이 두 가지라 먼저 정해 주시면 좋겠습니다.\n\n1. 페이지 번호: 주소가 /posts/2처럼 나뉘어 검색 엔진에 유리합니다.\n2. 무한 스크롤: 휴대폰에서 넘기기 편하지만 특정 글 위치를 다시 찾기 어렵습니다.', 30)
+    .tu('AskUserQuestion', { questions: [{ question: '글 목록을 어떻게 나눌까요?', options: [{ label: '페이지 번호' }, { label: '무한 스크롤' }] }] });
+
+  Log('demo-data-pipeline', 13)
+    .u('어제 날짜 데이터로 집계 파이프라인 한 번 돌려 주고, 실패하는 단계 있으면 알려 줘.')
+    .a('어제 날짜 데이터로 실행하겠습니다.')
+    .tu('Bash', { command: 'python -m pipeline.run --date 2026-11-13' })
+    .tr('Bash', '[1/4] extract   … 12,480 rows\n[2/4] clean     … 12,311 rows (169 dropped)\n[3/4] aggregate …');
+
+  Log('demo-drawing-review', 94)
+    .u('도면 검토 결과를 PDF 리포트로 뽑는 기능을 마무리해 줘. 테스트도 다 돌려 주고.')
+    .a('남은 작업을 확인하겠습니다.')
+    .tu('Grep', { pattern: 'TODO\\(report\\)', path: 'src' })
+    .tr('Grep', 'src/report/pdf.ts:18: // TODO(report): 표지에 검토 일자 넣기\nsrc/report/pdf.ts:77: // TODO(report): 지적 사항 요약 표')
+    .a('남은 일은 두 가지입니다. 표지에 검토 일자를 넣고, 지적 사항 요약 표를 만들겠습니다.')
+    .tu('Edit', { file_path: 'src/report/pdf.ts', old_string: '// TODO(report): 표지에 검토 일자 넣기', new_string: 'cover.date = formatDate(review.at);' })
+    .tr('Edit', 'The file src/report/pdf.ts has been updated.')
+    .tu('Write', { file_path: 'src/report/summary-table.ts', content: 'export function summaryTable(findings) { … }' })
+    .tr('Write', 'File created successfully at: src/report/summary-table.ts')
+    .tu('Bash', { command: 'npm test', description: '전체 테스트 실행' })
+    .tr('Bash', ' ✓ test/report/pdf.test.ts (9 tests)\n ✓ test/report/summary-table.test.ts (6 tests)\n ✓ test/review/rules.test.ts (27 tests)\n…(출력이 길어 줄였습니다)', { truncated: true })
+    .tu('Bash', { command: 'npm run report -- --sample 3', description: '예시 도면 3건으로 리포트 생성' })
+    .tr('Bash', 'out/report-A-101.pdf (4 pages)\nout/report-A-102.pdf (3 pages)\nout/report-B-201.pdf (6 pages)')
+    .a('PDF 리포트 기능을 마무리했습니다. 테스트 42개가 모두 통과했습니다.\n\n- 표지에 검토 일자가 들어갑니다.\n- 마지막 장에 지적 사항 요약 표가 붙습니다.\n- 예시 도면 3건으로 리포트를 뽑아 out/ 폴더에 두었습니다.', 50);
+
+  Log('demo-homepage', 30)
+    .u('메인 화면 첫 영역을 새 디자인 시안대로 바꿔 줘. 시안은 design/hero.png에 있어.')
+    .tu('Read', { file_path: 'design/hero.png' })
+    .tr('Read', '[image]')
+    .a('시안을 확인했습니다. 제목을 왼쪽에 두고 오른쪽에 제품 사진을 놓는 2단 구성입니다. 지금 구성 요소를 고치겠습니다.')
+    .tu('Edit', { file_path: 'src/components/Hero.astro', old_string: '<section class="hero">', new_string: '<section class="hero hero--split">' })
+    .tr('Edit', 'The file src/components/Hero.astro has been updated.');
+
+  (function () {
+    var L = Log('demo-api-gateway', 127);
+    var files = ['src/middleware/auth.ts', 'src/middleware/session.ts', 'src/routes/users.ts', 'src/routes/orders.ts',
+      'src/routes/products.ts', 'src/lib/token.ts', 'src/lib/errors.ts', 'test/auth.test.ts'];
+    L.u('인증 미들웨어를 정리하고 싶어요. 지금 라우트마다 토큰 검사를 복사해서 쓰고 있어서 하나로 모아 주세요. 기존 동작은 바뀌면 안 됩니다.')
+      .a('라우트별 토큰 검사 코드를 먼저 모두 찾아보겠습니다.')
+      .tu('Grep', { pattern: 'verifyToken\\(', path: 'src' })
+      .tr('Grep', files.slice(2, 5).map(function (f, i) { return f + ':' + (12 + i * 7) + ':  const user = verifyToken(req.headers.authorization);'; }).join('\n'));
+    files.forEach(function (f, i) {
+      L.tu('Read', { file_path: f }).tr('Read', '// ' + f + '\nimport { Router } from "express";\n…');
+      if (i % 2 === 1) L.a(f + '에서도 같은 검사 코드가 반복됩니다. 오류 응답 모양이 라우트마다 조금씩 달라서, 합칠 때 기존 응답을 그대로 지키도록 하겠습니다.', 30);
+    });
+    L.a('정리 방향은 이렇습니다.\n\n1. src/middleware/auth.ts 하나에 토큰 검사와 오류 응답을 모읍니다.\n2. 라우트는 requireUser()만 씁니다.\n3. 지금 응답 모양을 고정하는 테스트를 먼저 만들어 바뀌지 않았는지 확인합니다.', 60)
+      .u('좋아요, 그렇게 진행해 주세요. 테스트부터요.', 90)
+      .tu('Write', { file_path: 'test/auth.contract.test.ts', content: 'describe("인증 응답 모양", () => { … })' })
+      .tr('Write', 'File created successfully at: test/auth.contract.test.ts')
+      .tu('Bash', { command: 'npm test -- --run auth.contract' })
+      .tr('Bash', ' ✓ test/auth.contract.test.ts (14 tests) 61ms');
+    ['users', 'orders', 'products'].forEach(function (r) {
+      L.tu('Edit', { file_path: 'src/routes/' + r + '.ts', old_string: 'const user = verifyToken(req.headers.authorization);', new_string: 'const user = requireUser(req);' })
+        .tr('Edit', 'The file src/routes/' + r + '.ts has been updated.')
+        .tu('Bash', { command: 'npm test -- --run ' + r })
+        .tr('Bash', ' ✓ test/' + r + '.test.ts (' + (8 + r.length) + ' tests)')
+        .a(r + ' 라우트를 옮겼습니다. 응답 모양 테스트도 그대로 통과합니다.', 20);
+    });
+    L.u('토큰이 만료됐을 때 401 대신 403이 나가는 곳이 있었던 것 같은데 확인해 줄래요?', 120)
+      .tu('Grep', { pattern: 'status\\(403\\)', path: 'src' })
+      .tr('Grep', 'src/routes/orders.ts:88:    return res.status(403).json({ error: "expired" });')
+      .a('맞습니다. orders 라우트 한 곳만 만료된 토큰에 403을 돌려주고 있었습니다. 다른 라우트와 맞추려면 401로 바꿔야 하는데, 기존 동작을 바꾸는 일이라 따로 커밋으로 나누겠습니다.')
+      .tu('Bash', { command: 'git add -A && git commit -m "인증 검사를 미들웨어 하나로 모음"' })
+      .tr('Bash', '[refactor/auth-middleware 3f2a9c1] 인증 검사를 미들웨어 하나로 모음\n 6 files changed, 84 insertions(+), 131 deletions(-)')
+      .tu('Bash', { command: 'npm test -- --run auth' });
+  })();
+
+  Log('demo-report-batch', 69)
+    .u('지난달 주문 리포트를 거래처별로 다시 뽑아 주세요. 어제 수정한 환율 반영해서요.')
+    .a('거래처 목록과 환율 표를 먼저 불러오겠습니다.')
+    .tu('Bash', { command: 'python scripts/load_rates.py --month 2026-10' })
+    .tr('Bash', 'loaded 31 daily rates (USD, EUR, JPY)')
+    .tu('Bash', { command: 'python scripts/build_reports.py --month 2026-10 --by vendor' })
+    .tr('Bash', 'vendor 1/58 … ok\nvendor 2/58 … ok\n…')
+    .a('58개 거래처 가운데 23개까지 만들었습니다. 이어서 나머지를 만들겠습니다.', 300);
+
+  Log('demo-mobile-app', 63)
+    .u('안드로이드 릴리스 빌드 만들어 줘. 버전은 1.4.2로.')
+    .tu('Edit', { file_path: 'app.json', old_string: '"version": "1.4.1"', new_string: '"version": "1.4.2"' })
+    .tr('Edit', 'The file app.json has been updated.')
+    .a('버전을 1.4.2로 올렸습니다. 릴리스 번들을 만들겠습니다. 몇 분 걸립니다.')
+    .tu('Bash', { command: 'npx expo export --platform android' }, {});
+
+  Log('demo-infra-scripts', 239)
+    .u('백업 스크립트가 매일 새벽에 도는지 확인하고, 30일 지난 백업은 지우도록 바꿔 줘.')
+    .tu('Read', { file_path: 'backup/run.sh' })
+    .tr('Read', '#!/usr/bin/env bash\nset -euo pipefail\n…')
+    .tu('Edit', { file_path: 'backup/run.sh', old_string: '# cleanup', new_string: 'find "$DEST" -mtime +30 -delete' })
+    .tr('Edit', 'The file backup/run.sh has been updated.')
+    .a('매일 04:00에 도는 것을 확인했고, 30일 지난 백업을 지우는 줄을 넣었습니다.', 60);
+
+  spreadTimes();
+
+  // ── 화면용 조합 ────────────────────────────────────────
+  function me() { return USERS.filter(function (u) { return u.id === meId; })[0]; }
+  function userView(u) { return { id: u.id, email: u.email, name: u.name, role: u.role, status: u.status }; }
+  function sessionById(id) {
+    return sessions.filter(function (s) { return s.id === id; })[0] || null;
+  }
+  function visibleSessions(all) {
+    var cutoff = Date.now() - settings.endHours * 60 * MIN;
+    var alive = machines.map(function (m) { return m.id; });
+    return sessions.filter(function (s) {
+      if (all) return true;
+      if (alive.indexOf(s.machineId) < 0) return false;
+      return !(s.status === 'end' && s.endedAt && Date.parse(s.endedAt) < cutoff);
+    });
+  }
+  function snapshot(all) {
+    var list = visibleSessions(all).slice().sort(function (a, b) { return Date.parse(b.lastEventAt) - Date.parse(a.lastEventAt); });
+    return { sessions: clone(list), machines: clone(machines), accounts: clone(accounts) };
+  }
+
+  // ── 가짜 실시간 스트림 ──────────────────────────────────
+  var streams = [];
+  function publish(msg) {
+    var data = JSON.stringify(msg);
+    streams.slice().forEach(function (es) { es._message(data); });
+  }
+  function publishSession(s) { publish({ type: 'session', session: clone(s) }); }
+
+  function FakeEventSource(url, opts) {
+    this.url = new URL(String(url), location.href).href;
+    this.withCredentials = !!(opts && opts.withCredentials);
+    this.readyState = 0;
+    this.onopen = null;
+    this.onmessage = null;
+    this.onerror = null;
+    this._listeners = {};
+    var self = this;
+    setTimeout(function () {
+      if (self.readyState === 2) return;
+      var ok = new URL(self.url).pathname === '/api/stream' && loggedIn && me().status === 'active';
+      if (!ok) { self.readyState = 2; self._fire('error', new Event('error')); return; }
+      self.readyState = 1;
+      streams.push(self);
+      self._fire('open', new Event('open'));
+      self._message(JSON.stringify(Object.assign({ type: 'snapshot' }, snapshot(false))));
+      startWorld();
+    }, 180);
+  }
+  FakeEventSource.CONNECTING = 0;
+  FakeEventSource.OPEN = 1;
+  FakeEventSource.CLOSED = 2;
+  FakeEventSource.prototype.CONNECTING = 0;
+  FakeEventSource.prototype.OPEN = 1;
+  FakeEventSource.prototype.CLOSED = 2;
+  FakeEventSource.prototype.close = function () {
+    this.readyState = 2;
+    var i = streams.indexOf(this);
+    if (i >= 0) streams.splice(i, 1);
+  };
+  FakeEventSource.prototype.addEventListener = function (type, fn) {
+    (this._listeners[type] = this._listeners[type] || []).push(fn);
+  };
+  FakeEventSource.prototype.removeEventListener = function (type, fn) {
+    var l = this._listeners[type] || [];
+    var i = l.indexOf(fn);
+    if (i >= 0) l.splice(i, 1);
+  };
+  FakeEventSource.prototype.dispatchEvent = function (ev) { this._fire(ev.type, ev); return true; };
+  FakeEventSource.prototype._fire = function (type, ev) {
+    var self = this;
+    var h = this['on' + type];
+    if (typeof h === 'function') h.call(this, ev);
+    (this._listeners[type] || []).slice().forEach(function (fn) { fn.call(self, ev); });
+  };
+  FakeEventSource.prototype._message = function (data) {
+    if (this.readyState !== 1) return;
+    this._fire('message', new MessageEvent('message', { data: data, origin: location.origin }));
+  };
+  window.EventSource = FakeEventSource;
+
+  // ── 상태 변화 대본 ─────────────────────────────────────
+  // 몇 초마다 한 걸음씩: 작업 중 → 끝남 → 다시 작업 중(data-pipeline), 작업 중 → 답변 기다림 → 다시 작업 중(homepage),
+  // 둘이 동시에 빠지지 않게 엇갈려 두어 작업 중 세션이 늘 두 개 이상 남는다.
+  // 대화 줄 추가, 한도 변화, 컴퓨터 신호. 대본을 다 돌면 처음부터 다시 돈다.
+  function addLines(id, newLines) {
+    var lines = logs[id] = logs[id] || [];
+    var out = newLines.map(function (l) {
+      var line = Object.assign({}, l, { at: nowIso(), seq: lines.length });
+      lines.push(line);
+      return line;
+    });
+    publish({ type: 'log', sessionId: id, lines: clone(out) });
+  }
+  function touch(id, patch) {
+    var s = sessionById(id);
+    if (!s) return null;
+    Object.assign(s, patch, { lastEventAt: nowIso() });
+    var m = machines.filter(function (x) { return x.id === s.machineId; })[0];
+    if (m && m.online) m.lastSeenAt = nowIso();
+    if (visibleSessions(false).indexOf(s) >= 0) publishSession(s);
+    return s;
+  }
+  function tool(name, input, result) {
+    var summary = input.command || input.file_path || input.pattern || '';
+    var out = [{ role: 'tool', toolName: name, toolInput: input, text: summary }];
+    if (result != null) out.push({ role: 'tool', toolName: name, text: result });
+    return out;
+  }
+  function bump(email, five, seven) {
+    var a = accounts.filter(function (x) { return x.email === email; })[0];
+    if (!a) return;
+    a.fiveHourPct = Math.min(99, a.fiveHourPct + five);
+    a.sevenDayPct = Math.min(99, a.sevenDayPct + seven);
+    a.at = nowIso();
+    var h = a.history[a.history.length - 1];
+    if (h) { h.sevenDayPct = a.sevenDayPct; h.at = a.at; }
+    publish({ type: 'limits', account: clone(a) });
+  }
+
+  var hpEdits = ['src/components/Hero.astro', 'src/styles/hero.css', 'src/components/Nav.astro', 'src/pages/index.astro'];
+  var gwSteps = [
+    ['Bash', { command: 'npm test -- --run auth' }, ' ✓ test/auth.test.ts (23 tests) 112ms'],
+    ['Edit', { file_path: 'src/lib/errors.ts' }, 'The file src/lib/errors.ts has been updated.'],
+    ['Bash', { command: 'npm run lint' }, '✔ No problems found'],
+    ['Read', { file_path: 'src/middleware/session.ts' }, '// src/middleware/session.ts\n…'],
+  ];
+  var dpRun = 0;
+  var cycle = 0;
+
+  var script = [
+    function () {
+      var f = hpEdits[cycle % hpEdits.length];
+      addLines('demo-homepage', [{ role: 'assistant', text: f + '을(를) 시안에 맞게 고치겠습니다.' }].concat(tool('Edit', { file_path: f }, 'The file ' + f + ' has been updated.')));
+      touch('demo-homepage', { activity: { label: 'Edit', text: f } });
+    },
+    function () {
+      addLines('demo-data-pipeline', [
+        { role: 'tool', toolName: 'Bash', text: '[3/4] aggregate … 1,204 groups\n[4/4] publish   … ok' },
+        { role: 'assistant', text: '어제 데이터로 집계를 마쳤습니다. 네 단계 모두 성공했고, 정리 단계에서 빈 값이 있는 169줄을 뺐습니다.' },
+      ]);
+      touch('demo-data-pipeline', { status: 'done', activity: { label: '완료', text: '어제 데이터로 집계를 마쳤습니다. 네 단계 모두 성공했습니다.' } });
+    },
+    function () {
+      var st = gwSteps[cycle % gwSteps.length];
+      addLines('demo-api-gateway', tool(st[0], st[1], st[2]));
+      touch('demo-api-gateway', { activity: { label: st[0], text: st[1].command || st[1].file_path } });
+    },
+    function () {
+      dpRun += 1;
+      var day = 12 - (dpRun % 5);
+      var cmd = 'python -m pipeline.run --date 2026-11-' + (day < 10 ? '0' + day : day);
+      addLines('demo-data-pipeline', [{ role: 'user', text: '좋아요. 11월 ' + day + '일 데이터로도 한 번 더 돌려 주세요.' }].concat(
+        tool('Bash', { command: cmd }, '[1/4] extract   … ' + (11000 + dpRun * 137) + ' rows\n[2/4] clean     …')));
+      touch('demo-data-pipeline', { status: 'run', activity: { label: 'Bash', text: cmd } });
+    },
+    function () { bump(ACC_A, 1, 0.4); bump(ACC_B, 2, 0.6); },
+    function () {
+      addLines('demo-homepage', tool('Bash', { command: 'npm run build' }));
+      touch('demo-homepage', { status: 'wait', seen: false, activity: { label: '알림', text: 'Claude needs your permission to use Bash' } });
+    },
+    function () {
+      var st = gwSteps[(cycle + 2) % gwSteps.length];
+      addLines('demo-api-gateway', [{ role: 'assistant', text: '확인했습니다. 다음 단계로 넘어가겠습니다.' }].concat(tool(st[0], st[1], st[2])));
+      touch('demo-api-gateway', { activity: { label: st[0], text: st[1].command || st[1].file_path } });
+    },
+    function () {
+      addLines('demo-homepage', [
+        { role: 'tool', toolName: 'Bash', text: 'build complete in 3.4s · 18 pages' },
+        { role: 'assistant', text: '빌드가 끝났습니다. 휴대폰 폭에서 사진이 제목 아래로 내려가는지 확인하겠습니다.' },
+      ]);
+      touch('demo-homepage', { status: 'run', activity: { label: 'Bash', text: 'npm run build' } });
+    },
+    function () {
+      machines.forEach(function (m) {
+        if (!m.online) return;
+        m.lastSeenAt = nowIso();
+        publish({ type: 'machine', machine: clone(m) });
+      });
+      bump(ACC_A, 0, 0.3);
+    },
+  ];
+
+  var worldTimer = null;
+  var stepIndex = 0;
+  function startWorld() {
+    if (worldTimer) return;
+    worldTimer = setInterval(function () {
+      if (streams.length === 0) return;
+      script[stepIndex]();
+      stepIndex += 1;
+      if (stepIndex >= script.length) { stepIndex = 0; cycle += 1; }
+    }, 4000);
+  }
+
+  // ── 가짜 API ───────────────────────────────────────────
+  function J(status, body) { return { status: status, body: body }; }
+  var notFound = function () { return J(404, { error: 'not_found' }); };
+
+  function guard(level) {
+    if (!loggedIn) return J(401, { error: 'unauthorized' });
+    var u = me();
+    if (level !== 'any' && u.status !== 'active') return J(403, { error: u.status });
+    if (level === 'admin' && u.role !== 'admin') return J(403, { error: 'forbidden' });
+    return null;
+  }
+  function isInt(v, min, max) { return typeof v === 'number' && Math.floor(v) === v && v >= min && v <= max; }
+  function normalizeUserCode(raw) {
+    var s = String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    return s.length === 8 ? s.slice(0, 4) + '-' + s.slice(4) : '';
+  }
+  var usedCodes = {};
+
+  function route(method, url, body) {
+    var p = url.pathname;
+    var m;
+    var g;
+
+    if (p === '/auth/logout' && method === 'POST') { loggedIn = false; return J(200, { ok: true }); }
+
+    if (p === '/api/me' && method === 'GET') {
+      if ((g = guard('any'))) return g;
+      var u = me();
+      var res = { user: userView(u) };
+      if (u.role === 'admin' && u.status === 'active') {
+        res.pendingCount = USERS.filter(function (x) { return x.status === 'pending'; }).length;
+      }
+      return J(200, res);
+    }
+
+    if (p === '/api/sessions' && method === 'GET') {
+      if ((g = guard('active'))) return g;
+      return J(200, snapshot(url.searchParams.get('history') === '1'));
+    }
+
+    if ((m = /^\/api\/sessions\/([^/]+)\/log$/.exec(p)) && method === 'GET') {
+      if ((g = guard('active'))) return g;
+      var id = decodeURIComponent(m[1]);
+      if (!sessionById(id)) return notFound();
+      // 페이지 단위 조회: 쿼리 없음 = 최근 limit줄, before / after / around 중 하나.
+      var q = url.searchParams;
+      var keys = ['before', 'after', 'around'].filter(function (k) { return q.has(k); });
+      if (keys.length > 1) return J(400, { error: 'invalid_query' });
+      var limit = q.has('limit') ? Number(q.get('limit')) : 100;
+      if (!Number.isInteger(limit) || limit < 1) limit = 100;
+      limit = Math.min(limit, 500);
+      var all = logs[id] || [];
+      var picked;
+      if (keys.length === 0) {
+        picked = all.slice(-limit);
+      } else {
+        var at = Number(q.get(keys[0]));
+        if (!Number.isInteger(at)) return J(400, { error: 'invalid_' + keys[0] });
+        if (keys[0] === 'after') picked = all.filter(function (l) { return l.seq > at; }).slice(0, limit);
+        else if (keys[0] === 'before') picked = all.filter(function (l) { return l.seq < at; }).slice(-limit);
+        else {
+          var half = Math.floor(limit / 2);
+          var idx = Math.max(0, Math.min(all.length - limit, at - half));
+          picked = all.slice(idx, idx + limit);
+        }
+      }
+      return J(200, {
+        lines: clone(picked),
+        total: all.length,
+        hasMoreBefore: picked.length > 0 ? picked[0].seq > 0 : false,
+        hasMoreAfter: picked.length > 0 ? picked[picked.length - 1].seq < all.length - 1 : false,
+      });
+    }
+
+    if ((m = /^\/api\/sessions\/([^/]+)\/search$/.exec(p)) && method === 'GET') {
+      if ((g = guard('active'))) return g;
+      var sid = decodeURIComponent(m[1]);
+      if (!sessionById(sid)) return notFound();
+      var needle = (url.searchParams.get('q') || '').trim().toLowerCase();
+      if (needle.length < 2) return J(400, { error: 'query_too_short' });
+      var hits = (logs[sid] || []).filter(function (l) {
+        return (l.text || '').toLowerCase().indexOf(needle) >= 0 || (l.toolName || '').toLowerCase().indexOf(needle) >= 0;
+      }).reverse();
+      var max = Math.min(Number(url.searchParams.get('limit')) || 50, 50);
+      return J(200, {
+        total: hits.length,
+        hits: hits.slice(0, max).map(function (l) {
+          var flat = (l.text || '').replace(/\s+/g, ' ');
+          var i = Math.max(0, flat.toLowerCase().indexOf(needle) - 60);
+          var hit = { seq: l.seq, role: l.role, at: l.at, snippet: flat.slice(i, i + 160) };
+          if (l.toolName) hit.toolName = l.toolName;
+          return hit;
+        }),
+      });
+    }
+
+    if ((m = /^\/api\/sessions\/([^/]+)\/seen$/.exec(p)) && method === 'POST') {
+      if ((g = guard('active'))) return g;
+      var s = sessionById(decodeURIComponent(m[1]));
+      if (!s) return notFound();
+      if (!s.seen) { s.seen = true; publishSession(s); }
+      return J(200, { session: clone(s) });
+    }
+
+    if (p === '/api/settings') {
+      if ((g = guard('active'))) return g;
+      if (method === 'GET') return J(200, clone(settings));
+      if (method === 'PUT') {
+        var b = body || {};
+        var limits = { lostMinutes: [1, 1440], endHours: [0, 8760], keepChatDays: [1, 3650], keepUsageDays: [1, 3650] };
+        for (var k in b) {
+          if (!limits[k] || !isInt(b[k], limits[k][0], limits[k][1])) return J(400, { error: 'invalid_body' });
+        }
+        var endChanged = b.endHours !== undefined && b.endHours !== settings.endHours;
+        Object.assign(settings, b);
+        if (endChanged) publish(Object.assign({ type: 'snapshot' }, snapshot(false)));
+        return J(200, clone(settings));
+      }
+    }
+
+    if ((m = /^\/api\/accounts\/([^/]+)$/.exec(p)) && method === 'PATCH') {
+      if ((g = guard('active'))) return g;
+      var email = decodeURIComponent(m[1]);
+      var a = accounts.filter(function (x) { return x.email === email; })[0];
+      if (!a) return notFound();
+      var pb = body || {};
+      if (pb.alias !== undefined) a.alias = typeof pb.alias === 'string' && pb.alias.trim() ? pb.alias.trim().slice(0, 60) : null;
+      if (typeof pb.hidden === 'boolean') a.hidden = pb.hidden;
+      publish({ type: 'limits', account: clone(a) });
+      return J(200, clone(a));
+    }
+
+    if ((m = /^\/api\/machines\/([^/]+)$/.exec(p)) && method === 'DELETE') {
+      if ((g = guard('active'))) return g;
+      var mid = decodeURIComponent(m[1]);
+      var before = machines.length;
+      machines = machines.filter(function (x) { return x.id !== mid; });
+      if (machines.length === before) return notFound();
+      publish(Object.assign({ type: 'snapshot' }, snapshot(false)));
+      return J(200, { ok: true });
+    }
+
+    if (p === '/api/admin/users' && method === 'GET') {
+      if ((g = guard('admin'))) return g;
+      var order = USERS.slice().sort(function (x, y) {
+        return (y.status === 'pending') - (x.status === 'pending') || Date.parse(y.createdAt) - Date.parse(x.createdAt);
+      });
+      return J(200, { users: clone(order) });
+    }
+
+    if ((m = /^\/api\/admin\/users\/([^/]+)\/(approve|suspend)$/.exec(p)) && method === 'POST') {
+      if ((g = guard('admin'))) return g;
+      var uid = decodeURIComponent(m[1]);
+      var target = USERS.filter(function (x) { return x.id === uid; })[0];
+      if (!target) return notFound();
+      if (m[2] === 'suspend' && uid === meId) return J(400, { error: 'cannot_suspend_self' });
+      target.status = m[2] === 'approve' ? 'active' : 'suspended';
+      return J(200, { user: clone(target) });
+    }
+
+    if (p === '/api/device/lookup' && method === 'GET') {
+      if ((g = guard('active'))) return g;
+      var code = normalizeUserCode(url.searchParams.get('code'));
+      if (!code || usedCodes[code]) return notFound();
+      return J(200, { userCode: code, machineName: '노트북', os: 'macOS 15' });
+    }
+
+    if (p === '/api/device/approve' && method === 'POST') {
+      if ((g = guard('active'))) return g;
+      var c = normalizeUserCode(body && body.userCode);
+      if (!c || usedCodes[c]) return notFound();
+      usedCodes[c] = true;
+      var nm = { id: 'm-new-' + c.replace('-', '').toLowerCase(), name: '노트북', os: 'macOS 15', pluginVersion: '0.1.0', lastSeenAt: nowIso(), online: true, remoteReply: false };
+      machines.push(nm);
+      publish({ type: 'machine', machine: clone(nm) });
+      return J(200, { ok: true, machineName: nm.name });
+    }
+
+    // 확인 화면의 "거부"(서버에 새로 생기는 API). 거부한 코드는 다시 쓸 수 없다.
+    if (p === '/api/device/deny' && method === 'POST') {
+      if ((g = guard('active'))) return g;
+      var dc = normalizeUserCode(body && body.userCode);
+      if (!dc || usedCodes[dc]) return notFound();
+      usedCodes[dc] = true;
+      return J(200, { ok: true });
+    }
+
+    return notFound();
+  }
+
+  var realFetch = window.fetch ? window.fetch.bind(window) : null;
+  window.fetch = function (input, init) {
+    var isReq = typeof Request !== 'undefined' && input instanceof Request;
+    var url = new URL(isReq ? input.url : String(input), location.href);
+    var handled = url.origin === location.origin && (url.pathname.indexOf('/api/') === 0 || url.pathname.indexOf('/auth/') === 0);
+    if (!handled) return realFetch ? realFetch(input, init) : Promise.reject(new TypeError('fetch unavailable'));
+    var method = String((init && init.method) || (isReq ? input.method : 'GET')).toUpperCase();
+    var raw = init && typeof init.body === 'string' ? init.body : null;
+    var body;
+    if (raw) { try { body = JSON.parse(raw); } catch (e) { body = undefined; } }
+    var delay = 80 + Math.floor(Math.random() * 180);
+    return new Promise(function (resolve) {
+      setTimeout(function () {
+        var r = route(method, url, body);
+        resolve(new Response(JSON.stringify(r.body), { status: r.status, headers: { 'content-type': 'application/json; charset=utf-8' } }));
+      }, delay);
+    });
+  };
+
+  // ── 바깥으로 나가는 링크 가로채기 ─────────────────────
+  // 로그인 버튼(/auth/google)은 구글로 가지 않고 바로 로그인된 것으로 친다.
+  function go(to) {
+    history.pushState(null, '', to);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }
+  document.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    if (!a) return;
+    var u = new URL(a.getAttribute('href'), location.href);
+    if (u.origin !== location.origin || u.pathname.indexOf('/auth/') !== 0) return;
+    e.preventDefault();
+    loggedIn = true;
+    var next = u.searchParams.get('next');
+    if (me().status === 'pending') go('/pending');
+    else go(next && next.charAt(0) === '/' && next.charAt(1) !== '/' ? next : '/');
+  }, true);
+
+  // ── 주소 바꾸기와 앱 불러오기 ──────────────────────────
+  history.replaceState(null, '', startView);
+
+  var assets = window.__CMON_DEMO_ASSETS__ || { css: [], js: [] };
+  (assets.css || []).forEach(function (href) {
+    var l = document.createElement('link');
+    l.rel = 'stylesheet';
+    l.href = new URL(href, BASE).href;
+    document.head.appendChild(l);
+  });
+  function loadApp() {
+    (assets.js || []).forEach(function (src) {
+      var s = document.createElement('script');
+      s.type = 'module';
+      s.src = new URL(src, BASE).href;
+      document.head.appendChild(s);
+    });
+  }
+
+  // 대시보드에서 sel로 고른 세션을 연다(카드를 눌러 준다).
+  function openSelected() {
+    if (!selWanted || startPath !== '/') return;
+    var target = sessions.filter(function (s) { return s.id === selWanted || s.name === selWanted; })[0];
+    if (!target) return;
+    var tries = 0;
+    var timer = setInterval(function () {
+      tries += 1;
+      var cards = document.querySelectorAll('button.card');
+      for (var i = 0; i < cards.length; i++) {
+        var label = cards[i].getAttribute('aria-label') || '';
+        if (label.indexOf(target.name + ' · ') === 0) { clearInterval(timer); cards[i].click(); return; }
+      }
+      if (tries > 100) clearInterval(timer);
+    }, 100);
+  }
+
+  // 새 창에서 직접 열었을 때만 작은 데모 표시를 단다(목차의 틀 안에서는 목차가 이미 알려 준다).
+  function addBadge() {
+    var framed;
+    try { framed = window.top !== window.self; } catch (e) { framed = true; }
+    if (framed) return;
+    var b = document.createElement('a');
+    b.href = new URL('index.html', BASE).href;
+    b.textContent = '데모 · 예시 데이터 · 목차로';
+    b.setAttribute('aria-label', '예시 데이터로 동작하는 데모입니다. 목차로 돌아가기');
+    b.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:9999;padding:6px 10px;border-radius:999px;' +
+      'background:rgba(20,20,20,.82);color:#fff;font:500 12px/1.4 system-ui,sans-serif;text-decoration:none;' +
+      'box-shadow:0 2px 8px rgba(0,0,0,.2)';
+    document.body.appendChild(b);
+  }
+
+  function ready() { loadApp(); openSelected(); addBadge(); }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready);
+  else ready();
+})();
