@@ -5,6 +5,7 @@ import { authRoutes } from './auth/routes';
 import { deviceRoutes } from './device/routes';
 import { ingestRoutes } from './ingest/routes';
 import { queryRoutes } from './query/routes';
+import { replyRoutes } from './reply/routes';
 import { staticHandler } from './static';
 import { streamRoutes } from './stream/routes';
 import type { Deps, Env } from './types';
@@ -24,6 +25,7 @@ export function createApp(deps: Deps): Hono<Env> {
   app.route('/', deviceRoutes(deps));
   app.route('/', ingestRoutes(deps));
   app.route('/', queryRoutes(deps));
+  app.route('/', replyRoutes(deps));
   app.route('/', streamRoutes(deps));
 
   // 없는 API·auth 경로는 SPA로 떨어지지 않고 404.

@@ -1,5 +1,5 @@
 {
-  "description": "세션 이벤트를 c-monitor 서버로 보냅니다(비동기 — 클로드코드를 막지 않습니다)",
+  "description": "세션 이벤트를 c-monitor 서버로 보내고(비동기 — 클로드코드를 막지 않습니다), 웹 대시보드에서 보낸 승인·답·글을 세션에 전합니다",
   "hooks": {
     "SessionStart": [
       {
@@ -9,6 +9,13 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/hook.mjs\"",
             "async": true,
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/inbox.mjs\"",
+            "async": true,
+            "asyncRewake": true,
+            "timeout": 86400
           }
         ]
       }
@@ -81,6 +88,13 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/hook.mjs\"",
             "async": true,
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/inbox.mjs\"",
+            "async": true,
+            "asyncRewake": true,
+            "timeout": 86400
           }
         ]
       }
@@ -117,6 +131,17 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/hook.mjs\"",
             "async": true,
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/ask.mjs\"",
+            "timeout": 43200
           }
         ]
       }

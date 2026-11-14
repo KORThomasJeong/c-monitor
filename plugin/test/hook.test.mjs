@@ -32,7 +32,12 @@ const say = (role, text) => appendFileSync(transcript, JSON.stringify({
 const hookInput = (event, extra = {}) => JSON.stringify({
   session_id: 'sess-1', transcript_path: transcript, cwd: sb.root, hook_event_name: event, ...extra,
 });
-const run = (input) => runNode(HOOK, [], { env: sb.env, input });
+// 이 테스트를 원격 제어가 켜진 세션 안에서 돌려도 결과가 같도록 그 환경변수는 넘기지 않는다.
+const run = (input, extraEnv = {}) => {
+  const env = { ...sb.env, ...extraEnv };
+  if (!('CLAUDE_CODE_BRIDGE_SESSION_ID' in extraEnv)) delete env.CLAUDE_CODE_BRIDGE_SESSION_ID;
+  return runNode(HOOK, [], { env, input });
+};
 
 describe('hook.mjs', () => {
   it('연결돼 있지 않으면 아무것도 하지 않고 0으로 끝난다', async () => {
@@ -227,6 +232,46 @@ describe('hook.mjs', () => {
       expect(after.stdout.length).toBe(0);
       expect(server.requests.length).toBe(sentSoFar);
       expect(queueFiles()).toEqual([]);
+    } finally { await server.close(); }
+  });
+
+  it('원격 제어가 켜진 세션이면 remoteUrl에 공식 화면 주소를 넣는다', async () => {
+    const server = await startServer();
+    try {
+      connect(server.url);
+      await run(hookInput('Stop'), { CLAUDE_CODE_BRIDGE_SESSION_ID: 'session_01AbC-dEf_9' });
+      expect(server.requests[0].body.events[0].remoteUrl).toBe('https://claude.ai/code/session_01AbC-dEf_9');
+    } finally { await server.close(); }
+  });
+
+  it('원격 제어가 꺼져 있으면 remoteUrl은 null이다', async () => {
+    const server = await startServer();
+    try {
+      connect(server.url);
+      await run(hookInput('Stop'));
+      const e = server.requests[0].body.events[0];
+      expect('remoteUrl' in e).toBe(true);
+      expect(e.remoteUrl).toBeNull();
+    } finally { await server.close(); }
+  });
+
+  it('원격 제어 환경변수 값이 이상하면 remoteUrl은 null이다', async () => {
+    const server = await startServer();
+    try {
+      connect(server.url);
+      const odd = ['', 'abc', 'session_', 'session_a/b', 'session_a?x=1', 'https://example.com/session_x', 'session_a b', 'session_' + 'a'.repeat(400)];
+      for (const value of odd) await run(hookInput('Stop'), { CLAUDE_CODE_BRIDGE_SESSION_ID: value });
+      expect(server.requests).toHaveLength(odd.length);
+      expect(server.requests.map((q) => q.body.events[0].remoteUrl)).toEqual(odd.map(() => null));
+    } finally { await server.close(); }
+  });
+
+  it('서브에이전트 id(agent_id)를 data에 넣어 보낸다', async () => {
+    const server = await startServer();
+    try {
+      connect(server.url);
+      await run(hookInput('PostToolUse', { tool_name: 'Bash', tool_input: { command: 'ls' }, agent_id: 'agent-7' }));
+      expect(server.requests[0].body.events[0].data.agent_id).toBe('agent-7');
     } finally { await server.close(); }
   });
 

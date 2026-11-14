@@ -5,7 +5,10 @@ import {
   type DashboardSnapshot,
   type LogResponse,
   type LogSearchResponse,
+  type MachineView,
   type MeResponse,
+  type ReplyRequest,
+  type ReplyResponse,
   type SettingsView,
   type UserView,
 } from '@c-monitor/shared';
@@ -102,6 +105,35 @@ export const patchAccount = (email: string, patch: { alias?: string | null; hidd
   request<void>('PATCH', `/api/accounts/${enc(email)}`, patch);
 
 export const revokeMachine = (id: string) => request<void>('DELETE', `/api/machines/${enc(id)}`);
+
+/** 컴퓨터별 원격 답장 스위치. 응답 본문은 계약에 없어 바뀐 컴퓨터를 줄 수도, 비어 있을 수도 있다. */
+export const patchMachine = (id: string, patch: { remoteReply: boolean }) =>
+  request<MachineView | { ok: true } | undefined>('PATCH', `/api/machines/${enc(id)}`, patch);
+
+/**
+ * 세션에 답하거나 글을 보낸다(확인 창 없이 바로).
+ * 409 no_pending = 이미 끝난 승인·질문, 409 reply_disabled = 원격 답장을 쓸 수 없는 세션.
+ */
+export const replyToSession = (sessionId: string, body: ReplyRequest) =>
+  request<ReplyResponse>('POST', `${sessionPath(sessionId)}/reply`, body);
+
+/** 오류 응답 본문의 코드({error} 또는 {code}). */
+export function errorCode(e: unknown): string | null {
+  if (!(e instanceof ApiError) || !e.body || typeof e.body !== 'object') return null;
+  const b = e.body as Record<string, unknown>;
+  const c = b.error ?? b.code;
+  return typeof c === 'string' ? c : null;
+}
+
+/** 답장 실패를 화면에 보일 짧은 문구로. */
+export function replyErrorText(e: unknown): string {
+  const code = errorCode(e);
+  if (code === 'no_pending') return '이미 터미널에서 답했습니다';
+  if (code === 'reply_disabled') return '이 컴퓨터는 원격 답장이 꺼져 있습니다';
+  if (e instanceof ApiError && e.status === 404) return '세션을 찾지 못했습니다';
+  if (e instanceof ApiError && e.status === 400) return '보낼 수 없는 내용입니다';
+  return '보내지 못했습니다. 잠시 뒤 다시 시도해 주세요';
+}
 
 /** 서버가 배열이나 {users: [...]} 어느 쪽으로 줘도 배열로 돌려준다. */
 export async function getAdminUsers(): Promise<UserView[]> {

@@ -23,6 +23,7 @@ vi.mock('../api/client', async (orig) => {
     putSettings: vi.fn(async () => undefined),
     patchAccount: vi.fn(async () => undefined),
     revokeMachine: vi.fn(async () => undefined),
+    patchMachine: vi.fn(async () => undefined),
     approveDevice: vi.fn(),
     lookupDevice: vi.fn(),
     denyDevice: vi.fn(async () => ({ ok: true })),
@@ -216,6 +217,50 @@ describe('설정', () => {
     await u.click(screen.getByRole('button', { name: '저장' }));
     expect(await screen.findByText('종료 카드 유지에는 0부터 8760까지의 정수를 넣어 주세요.')).toBeInTheDocument();
     expect(api.putSettings).not.toHaveBeenCalled();
+  });
+
+  it('컴퓨터별 원격 답장 스위치는 바로 바꾸고, 실패하면 되돌린다', async () => {
+    const u = userEvent.setup();
+    vi.mocked(api.getDashboard).mockResolvedValue({
+      sessions: [],
+      machines: [
+        mkMachine({ id: 'm1', name: '집 PC', pluginVersion: '0.2.0', remoteReply: true }),
+        mkMachine({ id: 'm2', name: 'server-b', pluginVersion: '0.1.3', remoteReply: false }),
+      ],
+      accounts: [],
+    });
+    render(<Settings me={meOf()} />);
+    const sw = await screen.findByRole('switch', { name: '집 PC 원격 답장' });
+    expect(sw).toBeChecked();
+    await u.click(sw);
+    expect(api.patchMachine).toHaveBeenCalledWith('m1', { remoteReply: false });
+    expect(sw).not.toBeChecked();
+    // 저장 단추 없이 바로 적용된다.
+    expect(api.putSettings).not.toHaveBeenCalled();
+
+    vi.mocked(api.patchMachine).mockRejectedValueOnce(new ApiError(500, {}));
+    const old = screen.getByRole('switch', { name: 'server-b 원격 답장' });
+    await u.click(old);
+    expect(api.patchMachine).toHaveBeenCalledWith('m2', { remoteReply: true });
+    await waitFor(() => expect(old).not.toBeChecked());
+    expect(screen.getByText('server-b의 원격 답장을 바꾸지 못했습니다.')).toBeInTheDocument();
+  });
+
+  it('플러그인이 0.2.0보다 낮으면 스위치 옆에 "플러그인 업데이트 필요"', async () => {
+    vi.mocked(api.getDashboard).mockResolvedValue({
+      sessions: [],
+      machines: [
+        mkMachine({ id: 'm1', name: '집 PC', pluginVersion: '0.2.0' }),
+        mkMachine({ id: 'm2', name: 'server-b', pluginVersion: '0.1.3' }),
+      ],
+      accounts: [],
+    });
+    render(<Settings me={meOf()} />);
+    const machines = await screen.findByRole('region', { name: '내 컴퓨터' });
+    const rowOf = (name: string) => within(machines).getByText(name).closest('tr')!;
+    expect(within(rowOf('집 PC')).queryByText('플러그인 업데이트 필요')).not.toBeInTheDocument();
+    expect(within(rowOf('server-b')).getByText('플러그인 업데이트 필요')).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'server-b 원격 답장' })).toHaveAccessibleDescription('플러그인 업데이트 필요');
   });
 
   it('연결 해제는 한 번 더 눌러 확인한다', async () => {

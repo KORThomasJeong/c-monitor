@@ -9,6 +9,7 @@ import { SessionCard } from '../components/SessionCard';
 import { formatAgo } from '../lib/format';
 import { MODE_KEY, useNow, useStoredChoice, useTheme } from '../lib/prefs';
 import { accountStyles, groupByMachine, isPcOs, isUnseen, isWaitLike, sortSessions } from '../lib/view';
+import { useReplies } from '../state/reply';
 import { useDashboard } from '../state/store';
 import { Deck } from './Deck';
 import { DetailPanel, type Tab } from './DetailPanel';
@@ -25,6 +26,7 @@ const MODES = ['detail', 'deck'] as const;
 export function Dashboard({ me }: { me: MeResponse }) {
   const data = useDashboard();
   const { sessions, machines, accounts, logs, connected, loaded, markSeen, openLog, loadOlder, jumpTo, removeSession } = data;
+  const reply = useReplies();
   const theme = useTheme();
   const now = useNow();
   const [mode, setMode] = useStoredChoice(MODE_KEY, MODES, 'detail');
@@ -181,7 +183,7 @@ export function Dashboard({ me }: { me: MeResponse }) {
                   ) : (
                     <div className="cards">
                       {sortSessions(list).map((s) => (
-                        <SessionCard key={s.id} s={s} acct={styleOf(s.account)} selected={s.id === sel} now={now} onOpen={open} onDelete={remove} />
+                        <SessionCard key={s.id} s={s} acct={styleOf(s.account)} selected={s.id === sel} now={now} onOpen={open} onDelete={remove} reply={reply} />
                       ))}
                     </div>
                   )}
@@ -205,6 +207,7 @@ export function Dashboard({ me }: { me: MeResponse }) {
             onLatest={current ? () => openLog(current.id) : undefined}
             onSearch={current ? (q) => api.searchLog(current.id, q) : undefined}
             onDelete={current ? () => void remove(current.id) : undefined}
+            reply={reply}
           />
         </div>
       )}

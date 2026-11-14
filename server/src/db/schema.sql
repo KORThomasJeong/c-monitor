@@ -140,3 +140,42 @@ CREATE TABLE IF NOT EXISTS shares (
   created_at      timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS shares_target_idx ON shares (target_user_id);
+
+-- ── 원격 답장(2차) ──────────────────────────────────────────
+-- 공식 원격 제어 화면 주소(세션에서 /remote-control 을 켰을 때만).
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS remote_url text;
+
+-- 웹에서 답할 수 있는 승인·질문. session_id에는 FK가 없다 — 세션 행보다 먼저 올 수 있다.
+-- created_at은 기기 시계의 시각(훅 이벤트의 at과 견주기 위해), polled_at·answered_at은 서버 시각.
+CREATE TABLE IF NOT EXISTS reply_requests (
+  id             text PRIMARY KEY,
+  session_id     text NOT NULL,
+  machine_id     text NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+  user_id        text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind           text NOT NULL CHECK (kind IN ('permission', 'question')),
+  tool_name      text NOT NULL,
+  tool_input     jsonb,
+  questions      jsonb,
+  session_allow  text,
+  agent_id       text,
+  created_at     timestamptz NOT NULL,
+  polled_at      timestamptz NOT NULL,
+  status         text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'answered', 'gone')),
+  answer         jsonb,
+  answered_at    timestamptz
+);
+CREATE INDEX IF NOT EXISTS reply_requests_session_idx ON reply_requests (session_id) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS reply_requests_polled_idx ON reply_requests (polled_at);
+
+-- 웹에서 세션으로 보낸 글. 전달하면 delivered_at을 찍고 본문(text)을 비운다.
+CREATE TABLE IF NOT EXISTS session_messages (
+  id            text PRIMARY KEY,
+  session_id    text NOT NULL,
+  machine_id    text NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+  user_id       text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  text          text NOT NULL,
+  created_at    timestamptz NOT NULL,
+  delivered_at  timestamptz
+);
+CREATE INDEX IF NOT EXISTS session_messages_queue_idx ON session_messages (session_id, created_at) WHERE delivered_at IS NULL;
+CREATE INDEX IF NOT EXISTS session_messages_created_idx ON session_messages (created_at);

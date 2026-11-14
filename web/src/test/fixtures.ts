@@ -5,7 +5,7 @@ export const mkSession = (o: Partial<SessionView> & { id: string }): SessionView
   machineId: 'm1', account: 'dev@company-a.example', cwd: `/home/u/${o.id}`, name: o.id,
   branch: 'main', model: 'Opus 5.5', status: 'run', seen: true,
   startedAt: '2026-11-14T00:00:00Z', lastEventAt: '2026-11-14T00:10:00Z', endedAt: null,
-  activity: null, ...o,
+  activity: null, pending: null, canReply: false, queuedMessages: 0, remoteUrl: null, ...o,
 });
 
 export const mkMachine = (o: Partial<MachineView> & { id: string }): MachineView => ({

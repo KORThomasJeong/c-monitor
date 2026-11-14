@@ -6,6 +6,7 @@ import postgres from 'postgres';
 import type { HookEvent, HookEventName, IngestBatch, StreamMessage, TranscriptLine } from '@c-monitor/shared';
 import { createApp } from '../src/app';
 import { migrate } from '../src/db/index';
+import { createReplyHub } from '../src/reply/hub';
 import { createBus } from '../src/stream/bus';
 import type { Config, Deps, GoogleClient } from '../src/types';
 
@@ -76,7 +77,7 @@ export function makeHarness(db: TestDb, overrides: Partial<Deps> = {}, configOve
     googleClientSecret: 'secret',
     ...configOverrides,
   };
-  const deps: Deps = { sql: db.sql, config, bus, google, now: () => new Date(clock.now), ...overrides };
+  const deps: Deps = { sql: db.sql, config, bus, google, now: () => new Date(clock.now), reply: createReplyHub(), ...overrides };
   const app = createApp(deps);
 
   async function req(method: string, path: string, opts: ReqOpts = {}): Promise<Response> {

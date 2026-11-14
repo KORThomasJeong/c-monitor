@@ -75,6 +75,28 @@ describe('api client', () => {
     expect(bodyOf('PATCH /api/accounts/dev%40company-a.example')).toEqual({ alias: '회사' });
   });
 
+  it('원격 답장: 답 보내기와 컴퓨터 스위치의 경로·본문', async () => {
+    reply = () => json(200, { ok: true, queued: true });
+    const res = await api.replyToSession('s/1', { type: 'message', text: '안녕하세요' });
+    expect(res).toEqual({ ok: true, queued: true });
+    await api.patchMachine('m 1', { remoteReply: false });
+    expect(calls.map((c) => `${c.init.method} ${c.url}`)).toEqual(['POST /api/sessions/s%2F1/reply', 'PATCH /api/machines/m%201']);
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ type: 'message', text: '안녕하세요' });
+    expect(JSON.parse(String(calls[1]!.init.body))).toEqual({ remoteReply: false });
+  });
+
+  it('답장 실패 문구: 409 no_pending·reply_disabled를 구분한다', async () => {
+    reply = () => json(409, { error: 'no_pending' });
+    const e1 = await api.replyToSession('s1', { type: 'permission', requestId: 'r1', behavior: 'allow' }).catch((e) => e);
+    expect(api.errorCode(e1)).toBe('no_pending');
+    expect(api.replyErrorText(e1)).toBe('이미 터미널에서 답했습니다');
+    reply = () => json(409, { error: 'reply_disabled' });
+    const e2 = await api.replyToSession('s1', { type: 'message', text: 'x' }).catch((e) => e);
+    expect(api.replyErrorText(e2)).toBe('이 컴퓨터는 원격 답장이 꺼져 있습니다');
+    expect(api.replyErrorText(new api.ApiError(404, { error: 'not_found' }))).toBe('세션을 찾지 못했습니다');
+    expect(api.replyErrorText(new TypeError('network'))).toBe('보내지 못했습니다. 잠시 뒤 다시 시도해 주세요');
+  });
+
   it('관리자 사용자 목록은 배열이든 {users}든 배열로 돌려준다', async () => {
     reply = () => json(200, { users: [{ id: 'u1' }] });
     expect(await api.getAdminUsers()).toEqual([{ id: 'u1' }]);

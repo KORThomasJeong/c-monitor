@@ -32,16 +32,16 @@ export function machineGuard(deps: Deps, opts: { allowInactiveUser?: boolean } =
     if (!m) throw fail(401, 'unauthorized');
     const [row] = await deps.sql<{
       id: string; user_id: string; name: string; os: string; plugin_version: string;
-      last_seen_at: Date | null; revoked_at: Date | null; user_status: User['status'];
+      last_seen_at: Date | null; revoked_at: Date | null; remote_reply: boolean; user_status: User['status'];
     }[]>`
-      SELECT m.id, m.user_id, m.name, m.os, m.plugin_version, m.last_seen_at, m.revoked_at, u.status AS user_status
+      SELECT m.id, m.user_id, m.name, m.os, m.plugin_version, m.last_seen_at, m.revoked_at, m.remote_reply, u.status AS user_status
       FROM machines m JOIN users u ON u.id = m.user_id
       WHERE m.token_hash = ${sha256Hex(m[1]!)}`;
     if (!row || row.revoked_at) throw fail(401, 'unauthorized');
     if (row.user_status !== 'active' && !opts.allowInactiveUser) throw fail(403, row.user_status);
     c.set('machine', {
       id: row.id, userId: row.user_id, name: row.name, os: row.os,
-      pluginVersion: row.plugin_version, lastSeenAt: row.last_seen_at,
+      pluginVersion: row.plugin_version, lastSeenAt: row.last_seen_at, remoteReply: row.remote_reply,
     });
     await next();
   };

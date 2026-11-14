@@ -14,6 +14,10 @@
  *   - sel   : 세션 이름 또는 id       (대시보드에서 그 세션 상세를 연다)
  *             대화가 긴 세션은 api-gateway(200줄 넘음). "이전 대화 더 보기"와 검색을 눌러 볼 수 있다.
  *
+ * 원격 답장(2차): search-api는 승인 대기, blog-site는 질문 대기(pending)라 카드·상세에서 바로 답해 볼 수 있다.
+ * 답하면 pending이 사라지고 작업 중으로 바뀌며 대화에 한 줄이 붙는다. 글을 보내면 잠시 뒤 답이 온다
+ * (작업 중이면 쌓아 두었다가 작업이 끝날 때 전달). 설정의 "원격 답장" 스위치를 끄면 그 컴퓨터 세션에는 답할 수 없다.
+ *
  * 앱은 location.pathname으로 화면을 고르므로 여기서 history.replaceState로 주소를 view 값으로 바꾼다.
  * 그러면 상대 경로 자산이 엉뚱한 곳을 가리키게 되므로, 빌드 스크립트가 넣어 둔 자산 목록
  * (window.__CMON_DEMO_ASSETS__)을 원래 주소 기준 절대 주소로 바꿔 직접 불러온다.
@@ -107,10 +111,10 @@
   var loggedIn = startPath !== '/login';
 
   var machines = [
-    { id: 'm-home', name: '집 PC', os: 'Windows 11', pluginVersion: '0.1.3', lastSeenAt: ago(0), online: true, remoteReply: false },
-    { id: 'm-srv', name: 'server-a', os: 'Ubuntu 24.04', pluginVersion: '0.1.3', lastSeenAt: ago(0.5), online: true, remoteReply: false },
-    { id: 'm-build', name: 'build-vm', os: 'Ubuntu 22.04', pluginVersion: '0.1.3', lastSeenAt: ago(1), online: true, remoteReply: false },
-    { id: 'm-cloud', name: 'cloud-box', os: 'Debian 12', pluginVersion: '0.1.3', lastSeenAt: ago(38), online: false, remoteReply: false },
+    { id: 'm-home', name: '집 PC', os: 'Windows 11', pluginVersion: '0.2.0', lastSeenAt: ago(0), online: true, remoteReply: true },
+    { id: 'm-srv', name: 'server-a', os: 'Ubuntu 24.04', pluginVersion: '0.2.0', lastSeenAt: ago(0.5), online: true, remoteReply: true },
+    { id: 'm-build', name: 'build-vm', os: 'Ubuntu 22.04', pluginVersion: '0.2.0', lastSeenAt: ago(1), online: true, remoteReply: true },
+    { id: 'm-cloud', name: 'cloud-box', os: 'Debian 12', pluginVersion: '0.2.0', lastSeenAt: ago(38), online: false, remoteReply: true },
   ];
 
   function history7(values) {
@@ -136,16 +140,25 @@
   function S(o) {
     return Object.assign({
       account: ACC_A, branch: 'main', model: 'claude-sonnet-4-5', status: 'run', seen: true,
-      endedAt: null, activity: null,
+      endedAt: null, activity: null, pending: null, canReply: false, queuedMessages: 0, remoteUrl: null,
     }, o, { id: 'demo-' + o.name });
   }
   var sessions = [
     S({ name: 'search-api', machineId: 'm-home', cwd: 'D:\\work\\search-api', branch: 'fix/recency-rank', model: 'claude-opus-4-5',
       status: 'wait', seen: false, startedAt: ago(46), lastEventAt: ago(0.4),
-      activity: { label: '알림', text: 'Claude needs your permission to use Bash' } }),
+      activity: { label: '알림', text: 'Claude needs your permission to use Bash' },
+      remoteUrl: 'https://claude.ai/code/session_demo',
+      pending: { id: 'req-1', kind: 'permission', toolName: 'Bash', summary: 'npm run migrate -- --env staging',
+        sessionAllow: '이 세션 동안 npm run migrate 명령은 다시 묻지 않습니다', at: ago(0.4), more: 0 } }),
     S({ name: 'blog-site', machineId: 'm-home', account: ACC_B, cwd: 'D:\\work\\blog-site', branch: 'feat/post-list',
       status: 'wait', seen: true, startedAt: ago(22), lastEventAt: ago(2),
-      activity: { label: 'AskUserQuestion', text: '글 목록을 어떻게 나눌까요? (페이지 번호 / 무한 스크롤)' } }),
+      activity: { label: 'AskUserQuestion', text: '글 목록을 어떻게 나눌까요? (페이지 번호 / 무한 스크롤)' },
+      pending: { id: 'req-2', kind: 'question', toolName: 'AskUserQuestion', summary: '글 목록을 어떻게 나눌까요?',
+        sessionAllow: null, at: ago(2), more: 0,
+        questions: [{ question: '글 목록을 어떻게 나눌까요?', header: '목록 나누기', options: [
+          { label: '페이지 번호', description: '주소가 /posts/2처럼 나뉘어 검색 엔진에 유리합니다' },
+          { label: '무한 스크롤', description: '휴대폰에서 넘기기 편하지만 특정 글 위치를 다시 찾기 어렵습니다' },
+        ] }] } }),
     S({ name: 'data-pipeline', machineId: 'm-home', account: ACC_B, cwd: 'D:\\work\\data-pipeline', branch: 'main',
       status: 'run', startedAt: ago(14), lastEventAt: ago(0.2),
       activity: { label: 'Bash', text: 'python -m pipeline.run --date 2026-11-13' } }),
@@ -346,9 +359,36 @@
       return !(s.status === 'end' && s.endedAt && Date.parse(s.endedAt) < cutoff);
     });
   }
+  // 원격 답장: 보낸 글 대기열(세션 id → 글 목록)과 요청 번호
+  var queues = {};
+  var reqSeq = 2;
+  function newReqId() { reqSeq += 1; return 'req-' + reqSeq; }
+  function machineOf(s) { return machines.filter(function (x) { return x.id === s.machineId; })[0] || null; }
+  function versionAtLeast(v, min) {
+    var a = String(v || '').split('-')[0].split('.').map(Number);
+    var b = min.split('.').map(Number);
+    for (var i = 0; i < Math.max(a.length, b.length); i++) {
+      var x = a[i] || 0;
+      var y = b[i] || 0;
+      if (isNaN(x)) return false;
+      if (x !== y) return x > y;
+    }
+    return true;
+  }
+  // 계약의 canReply 규칙: 소유자 본인(데모 세션은 모두 내 것), 원격 답장 켜짐, 플러그인 0.2.0 이상, 종료·끊김 아님
+  function canReplyOf(s) {
+    var m = machineOf(s);
+    return !!m && m.remoteReply && versionAtLeast(m.pluginVersion, '0.2.0') && s.status !== 'end' && s.status !== 'lost';
+  }
+  function sessionView(s) {
+    var v = clone(s);
+    v.canReply = canReplyOf(s);
+    v.queuedMessages = (queues[s.id] || []).length;
+    return v;
+  }
   function snapshot(all) {
     var list = visibleSessions(all).slice().sort(function (a, b) { return Date.parse(b.lastEventAt) - Date.parse(a.lastEventAt); });
-    return { sessions: clone(list), machines: clone(machines), accounts: clone(accounts) };
+    return { sessions: list.map(sessionView), machines: clone(machines), accounts: clone(accounts) };
   }
 
   // ── 가짜 실시간 스트림 ──────────────────────────────────
@@ -357,7 +397,7 @@
     var data = JSON.stringify(msg);
     streams.slice().forEach(function (es) { es._message(data); });
   }
-  function publishSession(s) { publish({ type: 'session', session: clone(s) }); }
+  function publishSession(s) { publish({ type: 'session', session: sessionView(s) }); }
 
   function FakeEventSource(url, opts) {
     this.url = new URL(String(url), location.href).href;
@@ -431,8 +471,47 @@
     var m = machines.filter(function (x) { return x.id === s.machineId; })[0];
     if (m && m.online) m.lastSeenAt = nowIso();
     if (visibleSessions(false).indexOf(s) >= 0) publishSession(s);
+    if (s.status === 'done' && (queues[id] || []).length) setTimeout(function () { deliverNext(id); }, 900);
     return s;
   }
+
+  // ── 원격 답장 흉내 ─────────────────────────────────────
+  var REPLIES = [
+    '네, 확인했습니다. 말씀하신 내용대로 이어서 진행하겠습니다.',
+    '알겠습니다. 그 부분을 먼저 살펴보고 바로 고치겠습니다.',
+    '좋습니다. 방금 요청하신 대로 바꿔 두었습니다. 더 필요한 것이 있으면 알려 주세요.',
+  ];
+  var replyTurn = 0;
+  /** 끝난 세션에 글 하나를 넘긴다: 사용자 줄 → 작업 중 → 잠시 뒤 답과 함께 끝남. */
+  function deliver(id, text) {
+    addLines(id, [{ role: 'user', text: text }]);
+    touch(id, { status: 'run', seen: true, activity: { label: '웹에서 보낸 글', text: text.split('\n')[0].slice(0, 120) } });
+    setTimeout(function () {
+      var reply = REPLIES[replyTurn++ % REPLIES.length];
+      addLines(id, [{ role: 'assistant', text: reply }]);
+      touch(id, { status: 'done', activity: { label: '완료', text: reply } });
+    }, 2600);
+  }
+  function deliverNext(id) {
+    var q = queues[id] || [];
+    var s = sessionById(id);
+    if (!q.length || !s || s.status !== 'done') return;
+    deliver(id, q.shift());
+  }
+  /** 승인·질문에 답한 뒤 이어지는 대화. */
+  function afterAnswer(id, steps) {
+    var t = 0;
+    steps.forEach(function (st) {
+      t += st.wait;
+      setTimeout(function () {
+        var s = sessionById(id);
+        if (!s) return;
+        if (st.lines) addLines(id, st.lines);
+        if (st.patch) touch(id, st.patch);
+      }, t);
+    });
+  }
+  var BEHAVIOR_LABEL = { allow: '허용', allow_session: '이 세션 동안 허용', deny: '거부' };
   function tool(name, input, result) {
     var summary = input.command || input.file_path || input.pattern || '';
     var out = [{ role: 'tool', toolName: name, toolInput: input, text: summary }];
@@ -489,7 +568,8 @@
     function () { bump(ACC_A, 1, 0.4); bump(ACC_B, 2, 0.6); },
     function () {
       addLines('demo-homepage', tool('Bash', { command: 'npm run build' }));
-      touch('demo-homepage', { status: 'wait', seen: false, activity: { label: '알림', text: 'Claude needs your permission to use Bash' } });
+      touch('demo-homepage', { status: 'wait', seen: false, activity: { label: '알림', text: 'Claude needs your permission to use Bash' },
+        pending: { id: newReqId(), kind: 'permission', toolName: 'Bash', summary: 'npm run build', sessionAllow: null, at: nowIso(), more: 0 } });
     },
     function () {
       var st = gwSteps[(cycle + 2) % gwSteps.length];
@@ -501,7 +581,7 @@
         { role: 'tool', toolName: 'Bash', text: 'build complete in 3.4s · 18 pages' },
         { role: 'assistant', text: '빌드가 끝났습니다. 휴대폰 폭에서 사진이 제목 아래로 내려가는지 확인하겠습니다.' },
       ]);
-      touch('demo-homepage', { status: 'run', activity: { label: 'Bash', text: 'npm run build' } });
+      touch('demo-homepage', { status: 'run', pending: null, activity: { label: 'Bash', text: 'npm run build' } });
     },
     function () {
       machines.forEach(function (m) {
@@ -668,6 +748,85 @@
       return J(200, clone(a));
     }
 
+    // 원격 답장: 승인·질문에 답하거나 글을 보낸다(계약의 ReplyRequest). 끝난 요청이면 409 no_pending.
+    if ((m = /^\/api\/sessions\/([^/]+)\/reply$/.exec(p)) && method === 'POST') {
+      if ((g = guard('active'))) return g;
+      var rid = decodeURIComponent(m[1]);
+      var rs = sessionById(rid);
+      if (!rs) return notFound();
+      var rb = body || {};
+      if (!canReplyOf(rs)) return J(409, { error: 'reply_disabled' });
+      if (rb.type === 'permission' || rb.type === 'answer') {
+        var pd = rs.pending;
+        if (!pd || pd.id !== rb.requestId) return J(409, { error: 'no_pending' });
+        if (rb.type === 'permission' && !BEHAVIOR_LABEL[rb.behavior]) return J(400, { error: 'invalid_body' });
+        if (rb.type === 'answer' && (!rb.answers || typeof rb.answers !== 'object')) return J(400, { error: 'invalid_body' });
+        var msg = typeof rb.message === 'string' ? rb.message.trim().slice(0, 4000) : '';
+        var lines = [];
+        var steps;
+        if (rb.type === 'permission' && rb.behavior === 'deny') {
+          lines.push({ role: 'system', text: '웹 대시보드에서 「거부」로 답했습니다' });
+          lines.push({ role: 'tool', toolName: pd.toolName, text: "The user doesn't want to proceed with this tool use. The tool use was rejected." });
+          if (msg) lines.push({ role: 'user', text: msg });
+          var after = msg ? '알겠습니다. 실행하지 않고 말씀하신 대로 바꿔서 진행하겠습니다.' : '알겠습니다. 그 명령은 실행하지 않겠습니다. 다른 방법이 필요하면 알려 주세요.';
+          steps = [{ wait: 2200, lines: [{ role: 'assistant', text: after }], patch: { status: 'done', activity: { label: '완료', text: after } } }];
+        } else if (rb.type === 'permission') {
+          lines.push({ role: 'system', text: '웹 대시보드에서 「' + BEHAVIOR_LABEL[rb.behavior] + '」로 답했습니다' });
+          var ok = pd.summary.indexOf('migrate') >= 0 ? ' ✓ 2 migrations applied (staging) in 1.8s' : '완료 · 0.' + (3 + (reqSeq % 6)) + '초';
+          var fin = pd.summary.indexOf('migrate') >= 0
+            ? '스테이징 DB에 인덱스 마이그레이션 2건을 적용했습니다. 검색 응답 시간도 다시 확인해 두었습니다.'
+            : '실행을 마쳤습니다. 결과를 확인하고 다음 단계로 넘어가겠습니다.';
+          steps = [
+            { wait: 1800, lines: [{ role: 'tool', toolName: pd.toolName, text: ok }] },
+            { wait: 2000, lines: [{ role: 'assistant', text: fin }], patch: { status: 'done', activity: { label: '완료', text: fin } } },
+          ];
+        } else {
+          var pairs = Object.keys(rb.answers).map(function (k) { return '"' + k + '"="' + String(rb.answers[k]).slice(0, 4000) + '"'; });
+          var first = String(rb.answers[Object.keys(rb.answers)[0]] || '');
+          lines.push({ role: 'tool', toolName: pd.toolName, text: 'User has answered your questions: ' + pairs.join(', ') + '.' });
+          var plan = '「' + first.slice(0, 60) + '」(으)로 정하셨군요. 그 방식으로 글 목록 페이지를 만들겠습니다.';
+          steps = [
+            { wait: 1600, lines: [{ role: 'assistant', text: plan }] },
+            { wait: 2400, lines: [{ role: 'assistant', text: '글 목록 페이지를 만들었습니다. 한 쪽에 20개씩 보이고, 휴대폰에서도 확인했습니다.' }],
+              patch: { status: 'done', activity: { label: '완료', text: '글 목록 페이지를 만들었습니다.' } } },
+          ];
+        }
+        rs.pending = null;
+        addLines(rid, lines);
+        touch(rid, { status: 'run', seen: true, pending: null, activity: { label: pd.toolName, text: pd.summary } });
+        afterAnswer(rid, steps);
+        return J(200, { ok: true, queued: false });
+      }
+      if (rb.type === 'message') {
+        var text = typeof rb.text === 'string' ? rb.text.trim() : '';
+        if (!text || text.length > 4000) return J(400, { error: 'invalid_body' });
+        if (rs.status === 'done') { deliver(rid, text); return J(200, { ok: true, queued: false }); }
+        // 작업 중·답 기다림·한도 초과: 쌓아 두었다가 작업이 끝나면 넘긴다.
+        (queues[rid] = queues[rid] || []).push(text);
+        publishSession(rs);
+        // 데모에서는 오래 기다리지 않게, 끝나지 않는 세션도 잠시 뒤 작업을 끝낸 것으로 친다.
+        setTimeout(function () {
+          var cur = sessionById(rid);
+          if (cur && (queues[rid] || []).length && cur.status === 'run') touch(rid, { status: 'done', activity: { label: '완료', text: '하던 작업을 마쳤습니다.' } });
+        }, 9000);
+        return J(200, { ok: true, queued: true });
+      }
+      return J(400, { error: 'invalid_body' });
+    }
+
+    // 컴퓨터별 원격 답장 스위치. 바뀐 컴퓨터와 그 세션들(canReply)을 다시 알린다.
+    if ((m = /^\/api\/machines\/([^/]+)$/.exec(p)) && method === 'PATCH') {
+      if ((g = guard('active'))) return g;
+      var pid = decodeURIComponent(m[1]);
+      var pm = machines.filter(function (x) { return x.id === pid; })[0];
+      if (!pm) return notFound();
+      if (!body || typeof body.remoteReply !== 'boolean') return J(400, { error: 'invalid_body' });
+      pm.remoteReply = body.remoteReply;
+      publish({ type: 'machine', machine: clone(pm) });
+      sessions.forEach(function (x) { if (x.machineId === pid && visibleSessions(false).indexOf(x) >= 0) publishSession(x); });
+      return J(200, clone(pm));
+    }
+
     if ((m = /^\/api\/machines\/([^/]+)$/.exec(p)) && method === 'DELETE') {
       if ((g = guard('active'))) return g;
       var mid = decodeURIComponent(m[1]);
@@ -708,7 +867,7 @@
       var c = normalizeUserCode(body && body.userCode);
       if (!c || usedCodes[c]) return notFound();
       usedCodes[c] = true;
-      var nm = { id: 'm-new-' + c.replace('-', '').toLowerCase(), name: '노트북', os: 'macOS 15', pluginVersion: '0.1.3', lastSeenAt: nowIso(), online: true, remoteReply: false };
+      var nm = { id: 'm-new-' + c.replace('-', '').toLowerCase(), name: '노트북', os: 'macOS 15', pluginVersion: '0.2.0', lastSeenAt: nowIso(), online: true, remoteReply: true };
       machines.push(nm);
       publish({ type: 'machine', machine: clone(nm) });
       return J(200, { ok: true, machineName: nm.name });

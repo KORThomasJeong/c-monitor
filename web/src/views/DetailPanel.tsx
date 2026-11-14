@@ -1,7 +1,7 @@
 // 오른쪽 상세 패널(1024px 미만에서는 전체 화면). 목업 Main의 aside.panel 구조 그대로.
 // 대화는 100줄씩 불러온다: 처음엔 최근 100줄, "이전 대화 더 보기"로 앞을 더 붙이고,
 // 검색 결과로 옮기면 그 줄을 가운데로 범위를 바꿔 불러온다.
-// 원격 답장(입력창·승인 버튼·원격 제어 링크)은 이번 범위가 아니어서 넣지 않았다.
+// 원격 답장: 기다리는 승인·질문은 대화 맨 아래에 답 버튼으로, 글 입력창은 패널 아래쪽에 둔다(canReply일 때만).
 import {
   SEARCH_MIN_CHARS,
   type LogLine,
@@ -12,8 +12,12 @@ import {
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import {
   AlertIcon, ArrowDownIcon, BackIcon, CheckCircleIcon, ChevronDownIcon, ChevronUpIcon, ClockIcon, CloseIcon, LockIcon,
-  PanelIcon, PowerIcon, SearchIcon, TerminalIcon, TrashIcon,
+  ExternalIcon, InfoIcon, PanelIcon, PowerIcon, SearchIcon, TerminalIcon, TrashIcon,
 } from '../components/Icons';
+import { Composer, PendingReply } from '../components/Reply';
+import { canAnswer } from '../components/SessionCard';
+import { isClosed, replyBlockReason, safeRemoteUrl } from '../lib/reply';
+import type { ReplyCtl } from '../state/reply';
 import { formatClock, formatDuration, formatTime } from '../lib/format';
 import { canDelete, splitMatches, statusLabel, TAG_COLOR, toolText } from '../lib/view';
 import type { LogWindow } from '../state/store';
@@ -34,6 +38,8 @@ type Props = {
   onLatest?: () => Promise<void>;
   onSearch?: (q: string) => Promise<LogSearchResponse>;
   onDelete?: () => void;
+  /** 원격 답장. 없으면 답 버튼·입력창을 그리지 않는다. */
+  reply?: ReplyCtl;
 };
 
 /** 찾은 글자를 <mark>로 감싼다. */
@@ -194,7 +200,7 @@ function useFitHeight(ref: { current: HTMLElement | null }) {
 
 export function DetailPanel(props: Props) {
   const { session: s, machine, log, tab, onTab, onClose, connected, now } = props;
-  const { onLoadOlder, onJump, onLatest, onSearch, onDelete } = props;
+  const { onLoadOlder, onJump, onLatest, onSearch, onDelete, reply } = props;
   const logRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   useFitHeight(panelRef);
@@ -253,7 +259,7 @@ export function DetailPanel(props: Props) {
       const box = scrollBox(el);
       box.scrollTop = box.scrollHeight;
     }
-  }, [first, last, lines?.length, s?.id, tab, s?.status, focus, log?.hasMoreAfter]);
+  }, [first, last, lines?.length, s?.id, tab, s?.status, s?.pending?.id, focus, log?.hasMoreAfter]);
 
   // 문서 전체가 스크롤되는 화면에서도 맨 아래 근처인지 따라간다.
   useEffect(() => {
@@ -393,6 +399,13 @@ export function DetailPanel(props: Props) {
   const loading = !log || (log.loading && all.length === 0);
   const partial = !!log && !log.loading && (log.hasMoreBefore || log.hasMoreAfter);
   const tabTitle = complete ? undefined : '불러온 대화만 셉니다';
+  // 원격 답장
+  const answerable = !!reply && canAnswer(s);
+  const multiQ = s.pending?.kind === 'question' && (s.pending.questions?.length ?? 0) > 1;
+  const composer = !!reply && s.canReply && !isClosed(s) && !(answerable && multiQ);
+  const blocked = reply ? replyBlockReason(s, machine) : null;
+  const remoteUrl = safeRemoteUrl(s.remoteUrl);
+  const remoteHint = !remoteUrl && !isClosed(s) && !s.sharedBy;
 
   return (
     <aside className="panel" aria-label="세션 상세" ref={panelRef}>
@@ -413,6 +426,17 @@ export function DetailPanel(props: Props) {
             <div className="kv" key={k}><span className="k">{k}</span><span className="v" title={v}>{v}</span></div>
           ))}
         </div>
+        {(remoteUrl || remoteHint) && (
+          <div className="p-actions">
+            {remoteUrl ? (
+              <a className="btn sm" href={remoteUrl} target="_blank" rel="noopener noreferrer" title="공식 원격 제어 화면을 새 탭에서 엽니다">
+                <ExternalIcon size={14} />원격 제어로 열기
+              </a>
+            ) : (
+              <p className="remote-hint"><InfoIcon size={14} />세션에서 <code>/remote-control</code> 을 실행하면 원격 제어 링크가 생깁니다</p>
+            )}
+          </div>
+        )}
       </div>
       <div className="tabs" role="tablist">
         <button type="button" role="tab" aria-selected={tab === 'chat'} className={tab === 'chat' ? 'on' : ''} onClick={() => onTab('chat')} title={tabTitle}>
@@ -507,7 +531,9 @@ export function DetailPanel(props: Props) {
           </p>
         )}
         {shown.map((l) => <Line key={l.seq} line={l} q={q} hit={focus?.seq === l.seq} />)}
-        {tab === 'chat' && !log?.hasMoreAfter && <StatusBox s={s} now={now} />}
+        {!log?.hasMoreAfter && answerable && reply && s.pending
+          ? <PendingReply s={s} pending={s.pending} ctl={reply} showError={!composer} />
+          : tab === 'chat' && !log?.hasMoreAfter && <StatusBox s={s} now={now} />}
         {log?.hasMoreAfter && (
           <div className="to-latest">
             <button type="button" className="btn sm primary" onClick={toLatest}>
@@ -517,6 +543,8 @@ export function DetailPanel(props: Props) {
           </div>
         )}
       </div>
+      {composer && reply && <Composer s={s} ctl={reply} />}
+      {!composer && blocked && <div className="reply-off" role="note"><InfoIcon size={14} />{blocked}</div>}
       <div className="p-foot"><span className={quiet || !connected ? 'live-dot off' : 'live-dot'} />{foot}</div>
     </aside>
   );

@@ -1,6 +1,7 @@
 // 서버 안에서 함께 쓰는 타입.
 import type postgres from 'postgres';
 import type { StreamMessage } from '@c-monitor/shared';
+import type { ReplyHub } from './reply/hub';
 
 /** 일반 연결과 트랜잭션 연결 둘 다 받는 쿼리 실행기. */
 export type Q = postgres.ISql<{}>;
@@ -29,6 +30,10 @@ export type Deps = {
   bus: Bus;
   google: GoogleClient;
   now: () => Date;
+  /** 원격 답장의 대기자 목록(프로세스에 하나). */
+  reply: ReplyHub;
+  /** wait·inbox 요청 하나를 붙잡는 최대 시간(ms). 기본 REPLY_POLL_SECONDS초 — 테스트에서 줄인다. */
+  replyPollMs?: number;
   /** SSE 핑 간격(ms). 기본 15초. */
   pingMs?: number;
   /** 웹 빌드 폴더. 있으면 정적 서빙 + SPA 폴백. */
@@ -50,6 +55,7 @@ export type Machine = {
   os: string;
   pluginVersion: string;
   lastSeenAt: Date | null;
+  remoteReply: boolean;
 };
 
 /** Hono 컨텍스트 변수. */

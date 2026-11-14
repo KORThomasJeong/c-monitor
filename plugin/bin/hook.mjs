@@ -11,6 +11,8 @@ import { maskDeep } from '../lib/mask.mjs';
 import { osLabel } from '../lib/os.mjs';
 import { clearQueue, enqueue, flush, splitBatches } from '../lib/queue.mjs';
 import { postJson } from '../lib/send.mjs';
+import { readStdin } from '../lib/stdin.mjs';
+import { MAX_DATA_STRING, shrinkToolInput } from '../lib/toolinput.mjs';
 import { readTranscriptDelta } from '../lib/transcript.mjs';
 import { syncWrapper } from '../lib/wrapper.mjs';
 
@@ -31,19 +33,15 @@ const DATA_FIELDS = [
   'last_assistant_message', 'error', 'error_details', 'is_interrupt', 'reason', 'source',
   'stop_hook_active', 'permission_mode', 'agent_id', 'agent_type',
 ];
-const MAX_DATA_STRING = 4000;
-const MAX_TOOL_INPUT_BYTES = 8 * 1024;
+/** 원격 제어(/remote-control)를 켠 세션에 클로드코드가 넣어 주는 환경변수. 값은 session_… */
+const BRIDGE_ID = /^session_[A-Za-z0-9_-]+$/;
 
-/** stdin 전체를 읽는다. 입력이 안 오면 1초 뒤 포기한다. */
-function readStdin() {
-  return new Promise((done) => {
-    const chunks = [];
-    const finish = () => done(Buffer.concat(chunks).toString('utf8'));
-    const timer = setTimeout(finish, 1000);
-    process.stdin.on('data', (c) => chunks.push(c));
-    process.stdin.on('end', () => { clearTimeout(timer); finish(); });
-    process.stdin.on('error', () => { clearTimeout(timer); finish(); });
-  });
+/** 그 세션의 공식 원격 제어 화면 주소. 원격 제어를 켜지 않았거나 값이 이상하면 null. */
+function readRemoteUrl() {
+  const id = process.env.CLAUDE_CODE_BRIDGE_SESSION_ID;
+  if (typeof id !== 'string' || !BRIDGE_ID.test(id)) return null;
+  const url = `https://claude.ai/code/${id}`;
+  return url.length <= 300 ? url : null;
 }
 
 /** cwd에서 위로 올라가며 .git/HEAD를 찾아 브랜치 이름을 읽는다(프로세스 실행 없이). 못 찾으면 null. */
@@ -92,10 +90,8 @@ function buildData(input) {
   for (const [key, value] of Object.entries(data)) {
     if (typeof value === 'string' && value.length > MAX_DATA_STRING) data[key] = value.slice(0, MAX_DATA_STRING) + '…';
   }
-  if (data.tool_input !== undefined && Buffer.byteLength(JSON.stringify(data.tool_input)) > MAX_TOOL_INPUT_BYTES) {
-    // 큰 입력(파일 내용 등)은 요약만 보낸다. 전체는 대화 기록에 있다.
-    data.tool_input = { preview: JSON.stringify(data.tool_input).slice(0, 2000) + '…' };
-  }
+  // 큰 입력(파일 내용 등)은 요약만 보낸다. 원격 답장 등록(bin/ask.mjs)과 같은 규칙이다.
+  if (data.tool_input !== undefined) data.tool_input = shrinkToolInput(data.tool_input);
   return data;
 }
 
@@ -141,6 +137,7 @@ async function main() {
     cwd: cwd.slice(0, 2000),
     branch: readBranch(cwd),
     model: readModel(input),
+    remoteUrl: readRemoteUrl(),
     data: buildData(input),
   };
 

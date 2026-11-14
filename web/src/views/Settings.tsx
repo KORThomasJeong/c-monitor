@@ -1,10 +1,11 @@
 // 설정: 내 컴퓨터, 클로드 계정(별칭·숨기기), 표시 기준, 보관 기간.
-import type { AccountView, MachineView, MeResponse, SettingsView } from '@c-monitor/shared';
+import { REPLY_MIN_PLUGIN, type AccountView, type MachineView, type MeResponse, type SettingsView } from '@c-monitor/shared';
 import { useEffect, useState } from 'react';
 import * as api from '../api/client';
 import { LogoutIcon } from '../components/Icons';
 import { Sec, SidePage } from '../components/SidePage';
 import { formatAgo } from '../lib/format';
+import { pluginSupportsReply } from '../lib/reply';
 import { navigate } from '../router';
 
 const NAV: [string, string][] = [
@@ -67,6 +68,20 @@ export function Settings({ me }: { me: MeResponse }) {
       setMachines((list) => list?.filter((m) => m.id !== id) ?? null);
     } catch {
       setStatus({ ok: false, text: '연결을 해제하지 못했습니다.' });
+    }
+  };
+
+  /** 원격 답장 스위치는 저장 단추 없이 바로 바꾼다. 실패하면 되돌린다. */
+  const toggleReply = async (m: MachineView, on: boolean) => {
+    const set = (v: boolean) => setMachines((list) => list?.map((x) => (x.id === m.id ? { ...x, remoteReply: v } : x)) ?? null);
+    set(on);
+    setStatus(null);
+    try {
+      const res = await api.patchMachine(m.id, { remoteReply: on });
+      if (res && typeof res === 'object' && 'remoteReply' in res && typeof res.remoteReply === 'boolean') set(res.remoteReply);
+    } catch {
+      set(!on);
+      setStatus({ ok: false, text: `${m.name}의 원격 답장을 바꾸지 못했습니다.` });
     }
   };
 
@@ -151,15 +166,15 @@ export function Settings({ me }: { me: MeResponse }) {
       <Sec
         id="machines"
         title="내 컴퓨터"
-        desc="해제하면 그 컴퓨터의 연결 키가 바로 막히고, 다시 쓰려면 연결 명령을 새로 실행해야 합니다."
+        desc="원격 답장을 켜면 웹에서 그 컴퓨터의 세션에 승인·답·글을 보낼 수 있습니다(바로 적용). 연결을 해제하면 연결 키가 바로 막히고, 다시 쓰려면 연결 명령을 새로 실행해야 합니다."
         aside={machines && <span className="tag blue"><span className="dot" />{machines.length}대 연결됨</span>}
       >
         <div className="tbl-box">
           <table className="tbl">
-            <thead><tr><th>컴퓨터</th><th>운영체제</th><th>플러그인</th><th>마지막 전송</th><th>상태</th><th className="r">관리</th></tr></thead>
+            <thead><tr><th>컴퓨터</th><th>운영체제</th><th>플러그인</th><th>마지막 전송</th><th>상태</th><th>원격 답장</th><th className="r">관리</th></tr></thead>
             <tbody>
-              {machines === null && <tr><td colSpan={6} className="muted">불러오는 중입니다.</td></tr>}
-              {machines?.length === 0 && <tr><td colSpan={6} className="muted">연결한 컴퓨터가 없습니다.</td></tr>}
+              {machines === null && <tr><td colSpan={7} className="muted">불러오는 중입니다.</td></tr>}
+              {machines?.length === 0 && <tr><td colSpan={7} className="muted">연결한 컴퓨터가 없습니다.</td></tr>}
               {machines?.map((m) => (
                 <tr key={m.id}>
                   <td><b style={{ fontWeight: 500 }}>{m.name}</b></td>
@@ -167,6 +182,24 @@ export function Settings({ me }: { me: MeResponse }) {
                   <td className="muted">{m.pluginVersion || '—'}</td>
                   <td className="muted">{formatAgo(m.lastSeenAt, now)}</td>
                   <td><span className={m.online ? 'tag green' : 'tag neutral'}><span className="dot" />{m.online ? '연결됨' : '오프라인'}</span></td>
+                  <td>
+                    <span className="sw-cell">
+                      <input
+                        className="sw"
+                        type="checkbox"
+                        role="switch"
+                        aria-label={`${m.name} 원격 답장`}
+                        aria-describedby={pluginSupportsReply(m) ? undefined : `old-${m.id}`}
+                        checked={m.remoteReply}
+                        onChange={(e) => void toggleReply(m, e.target.checked)}
+                      />
+                      {!pluginSupportsReply(m) && (
+                        <span className="tag amber" id={`old-${m.id}`} title={`플러그인 ${REPLY_MIN_PLUGIN} 이상에서 원격 답장을 쓸 수 있습니다`}>
+                          플러그인 업데이트 필요
+                        </span>
+                      )}
+                    </span>
+                  </td>
                   <td className="r">
                     <button type="button" className="link-btn danger" onClick={() => revoke(m.id)} onBlur={() => setConfirming((c) => (c === m.id ? null : c))}>
                       {confirming === m.id ? '해제 확인' : '연결 해제'}

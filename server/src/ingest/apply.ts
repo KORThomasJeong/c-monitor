@@ -4,10 +4,23 @@ import {
   type HookEvent, type IngestBatch, type LogLine, type SessionStatus,
 } from '@c-monitor/shared';
 import { loadAccountViews, loadMachineViews, loadSessionViews, ONLINE_MS, type SessionRow } from '../query/views';
+import { tryDeliver } from '../reply/deliver';
 import type { Deps, Machine } from '../types';
 import { head } from '../util';
 
 const ACTIVITY_MAX = 200;
+
+/**
+ * 이 이벤트가 오면, 그보다 먼저 등록된 승인·질문은 터미널에서 이미 답한 것이다(계획의 동작 규칙 3-②).
+ * PreToolUse는 넣지 않는다 — 등록과 순서가 뒤바뀌어 올 수 있다.
+ */
+const CLEARS_REQUESTS: ReadonlySet<HookEvent['event']> = new Set([
+  'PostToolUse', 'PostToolUseFailure', 'UserPromptSubmit', 'Stop', 'StopFailure', 'SessionEnd',
+]);
+
+/** 서브에이전트가 낸 이벤트면 그 id, 메인 세션이면 null. */
+const agentOf = (e: Pick<HookEvent, 'data'>): string | null =>
+  typeof e.data?.agent_id === 'string' && e.data.agent_id.length > 0 ? e.data.agent_id : null;
 
 type Activity = { label: string; text: string };
 
@@ -42,6 +55,7 @@ type SessionState = {
   status: SessionStatus; seen: boolean; account: string | null; cwd: string;
   branch: string | null; model: string | null;
   startedAt: Date; lastEventAt: Date; endedAt: Date | null; activity: Activity | null;
+  remoteUrl: string | null;
 };
 
 /** 이벤트 하나를 세션 상태에 적용한다(순수 함수). */
@@ -53,7 +67,7 @@ export function applyEvent(prev: SessionState | null, e: HookEvent, now: Date): 
     ? { ...prev }
     : {
         status, seen: true, account: null, cwd: e.cwd, branch: e.branch, model: e.model,
-        startedAt: at, lastEventAt: at, endedAt: null, activity: null,
+        startedAt: at, lastEventAt: at, endedAt: null, activity: null, remoteUrl: null,
       };
 
   // 답을 기다리게 만든 이벤트가 오면 "아직 안 봄"으로.
@@ -69,6 +83,8 @@ export function applyEvent(prev: SessionState | null, e: HookEvent, now: Date): 
   if (e.cwd) s.cwd = e.cwd;
   s.branch = e.branch;
   if (e.model) s.model = e.model;
+  // 원격 제어 주소: 필드가 없으면(옛 플러그인) 그대로 두고, null이면 지운다.
+  if (e.remoteUrl !== undefined) s.remoteUrl = e.remoteUrl;
   const activity = activityOf(e);
   if (activity) s.activity = activity;
   return s;
@@ -78,6 +94,7 @@ const fromRow = (r: SessionRow): SessionState => ({
   status: r.status, seen: r.seen, account: r.account, cwd: r.cwd, branch: r.branch, model: r.model,
   startedAt: r.started_at, lastEventAt: r.last_event_at, endedAt: r.ended_at,
   activity: r.activity_label === null ? null : { label: r.activity_label, text: r.activity_text ?? '' },
+  remoteUrl: r.remote_url,
 });
 
 type LineInsert = {
@@ -113,10 +130,15 @@ export async function applyBatch(deps: Deps, machine: Machine, batch: IngestBatc
     // 이 묶음이 건드리는 세션들의 현재 상태와, 사용자가 지운 세션의 표시.
     const touched = [...new Set([...received.map((e) => sid(e.sessionId)), ...batch.transcript.map((t) => sid(t.sessionId))])];
     const states = new Map<string, SessionState>();
+    /** 이 묶음을 반영하기 전의 상태(없던 세션은 들어 있지 않다). */
+    const statusBefore = new Map<string, SessionStatus>();
     const deletedAt = new Map<string, number>();
     if (touched.length > 0) {
       const rows = await tx<SessionRow[]>`SELECT * FROM sessions WHERE id IN ${tx(touched)}`;
-      for (const r of rows) states.set(r.id, fromRow(r));
+      for (const r of rows) {
+        states.set(r.id, fromRow(r));
+        statusBefore.set(r.id, r.status);
+      }
       const gone = await tx<{ session_id: string; deleted_at: Date }[]>`
         SELECT session_id, deleted_at FROM deleted_sessions WHERE session_id IN ${tx(touched)}`;
       for (const r of gone) deletedAt.set(r.session_id, r.deleted_at.getTime());
@@ -155,23 +177,66 @@ export async function applyBatch(deps: Deps, machine: Machine, batch: IngestBatc
       const first = t.lines[0] ? new Date(Math.min(new Date(t.lines[0].at).getTime(), now.getTime())) : now;
       states.set(id, {
         status: 'done', seen: true, account: null, cwd: '', branch: null, model: null,
-        startedAt: first, lastEventAt: first, endedAt: null, activity: null,
+        startedAt: first, lastEventAt: first, endedAt: null, activity: null, remoteUrl: null,
       });
       dirty.add(id);
+    }
+
+    // ── 원격 답장: 뒤따른 이벤트로 끝난 승인·질문 치우기 ─────────
+    // 같은 세션·같은 에이전트에서 요청보다 뒤의 이벤트가 왔으면 터미널에서 먼저 답한 것이다 → gone.
+    // 세션이 끝났으면(SessionEnd) 에이전트를 가리지 않고 모두 치운다.
+    type Clear = { sessionId: string; agent: string | null; all: boolean; at: string };
+    const clears = new Map<string, Clear>();
+    for (const e of events) {
+      if (!CLEARS_REQUESTS.has(e.event)) continue;
+      const sessionId = sid(e.sessionId);
+      const all = e.event === 'SessionEnd';
+      const agent = all ? null : agentOf(e);
+      const key = JSON.stringify([sessionId, all, agent]);
+      const cur = clears.get(key);
+      if (!cur || new Date(e.at).getTime() > new Date(cur.at).getTime()) clears.set(key, { sessionId, agent, all, at: e.at });
+    }
+    const goneRequests: string[] = [];
+    for (const c of clears.values()) {
+      const rows = await tx<{ id: string }[]>`
+        UPDATE reply_requests SET status = 'gone'
+        WHERE status = 'pending' AND session_id = ${c.sessionId} AND created_at < ${c.at}
+          ${c.all ? tx`` : tx`AND agent_id IS NOT DISTINCT FROM ${c.agent}`}
+        RETURNING id`;
+      for (const r of rows) goneRequests.push(r.id);
+    }
+
+    const dirtyIds = [...dirty];
+    if (dirtyIds.length > 0) {
+      // 아직 기다리는 승인·질문이 남아 있으면 그 세션은 여전히 답을 기다린다.
+      // (등록보다 늦게 도착한 PreToolUse 따위가 "작업 중"으로 되돌리지 않게 한다)
+      const waiting = await tx<{ session_id: string }[]>`
+        SELECT DISTINCT session_id FROM reply_requests WHERE status = 'pending' AND session_id IN ${tx(dirtyIds)}`;
+      for (const { session_id } of waiting) {
+        const s = states.get(session_id)!;
+        if (s.status !== 'run') continue;
+        s.status = 'wait';
+        if (statusBefore.get(session_id) !== 'wait') s.seen = false;
+      }
+      // 끝난 세션에 쌓여 있던 글은 전달할 곳이 없다. (같은 id로 다시 이어져도 옛 글이 튀어나오지 않게 버린다)
+      const ended = dirtyIds.filter((id) => states.get(id)!.status === 'end');
+      if (ended.length > 0) await tx`DELETE FROM session_messages WHERE delivered_at IS NULL AND session_id IN ${tx(ended)}`;
     }
 
     for (const id of dirty) {
       const s = states.get(id)!;
       await tx`
         INSERT INTO sessions (id, user_id, machine_id, account, cwd, branch, model, status, seen,
-                              started_at, last_event_at, ended_at, activity_label, activity_text)
+                              started_at, last_event_at, ended_at, activity_label, activity_text, remote_url)
         VALUES (${id}, ${userId}, ${machine.id}, ${s.account}, ${s.cwd}, ${s.branch}, ${s.model}, ${s.status}, ${s.seen},
-                ${s.startedAt}, ${s.lastEventAt}, ${s.endedAt}, ${s.activity?.label ?? null}, ${s.activity?.text ?? null})
+                ${s.startedAt}, ${s.lastEventAt}, ${s.endedAt}, ${s.activity?.label ?? null}, ${s.activity?.text ?? null},
+                ${s.remoteUrl})
         ON CONFLICT (id) DO UPDATE SET
           account = EXCLUDED.account, cwd = EXCLUDED.cwd, branch = EXCLUDED.branch, model = EXCLUDED.model,
           status = EXCLUDED.status, seen = EXCLUDED.seen, started_at = EXCLUDED.started_at,
           last_event_at = EXCLUDED.last_event_at, ended_at = EXCLUDED.ended_at,
-          activity_label = EXCLUDED.activity_label, activity_text = EXCLUDED.activity_text`;
+          activity_label = EXCLUDED.activity_label, activity_text = EXCLUDED.activity_text,
+          remote_url = EXCLUDED.remote_url`;
     }
 
     // 클로드 계정: 이벤트와 한도에 나온 것을 모두 등록한다.
@@ -233,8 +298,16 @@ export async function applyBatch(deps: Deps, machine: Machine, batch: IngestBatc
       if (rows.length > 0) accountsChanged.add(l.account);
     }
 
-    return { accepted: events.length, dirty: [...dirty], newLines, accountsChanged: [...accountsChanged] };
+    return {
+      accepted: events.length, dirty: dirtyIds, newLines, accountsChanged: [...accountsChanged], goneRequests,
+      done: dirtyIds.filter((id) => states.get(id)!.status === 'done'),
+      ended: dirtyIds.filter((id) => states.get(id)!.status === 'end'),
+    };
   });
+
+  // 치워진 승인·질문을 붙잡고 있던 wait 요청과, 끝난 세션의 inbox 대기자를 바로 풀어 준다.
+  deps.reply.notifyRequests(out.goneRequests);
+  for (const id of out.ended) deps.reply.dropInbox({ sessionId: id });
 
   // ── 커밋 뒤: 소유자에게만 알린다 ──────────────────────────
   for (const { session } of await loadSessionViews(sql, out.dirty)) {
@@ -255,6 +328,11 @@ export async function applyBatch(deps: Deps, machine: Machine, batch: IngestBatc
   if (!wasOnline || infoChanged) {
     const [view] = await loadMachineViews(sql, userId, now, { id: machine.id });
     if (view) deps.bus.publish(userId, { type: 'machine', machine: view });
+  }
+
+  // 세션이 done이 됐으면 쌓여 있던 글을 대기자에게 넘겨 본다(넘기면 세션을 다시 내보낸다).
+  for (const id of out.done) {
+    await tryDeliver(deps, id).catch((err) => console.error('[reply] 글 전달 실패:', err));
   }
 
   return { accepted: out.accepted };

@@ -67,7 +67,7 @@ export function queryRoutes(deps: Deps): Hono<Env> {
     const target = c.req.query('user') || user.id;
     if (target !== user.id && user.role !== 'admin') throw fail(403, 'forbidden');
     const history = c.req.query('history') === '1';
-    return c.json(await loadSnapshot(sql, target, deps.now(), { history }));
+    return c.json(await loadSnapshot(sql, target, deps.now(), { history, viewerId: user.id }));
   });
 
   app.get('/api/sessions/:id/log', active, async (c) => {
@@ -102,12 +102,17 @@ export function queryRoutes(deps: Deps): Hono<Env> {
   app.delete('/api/sessions/:id', active, async (c) => {
     const id = c.req.param('id');
     const user = requireUser(c);
+    let gone: string[] = [];
     const result = await sql.begin(async (tx): Promise<'not_found' | 'active' | 'deleted'> => {
       const [row] = await tx<{ user_id: string; machine_id: string; status: SessionStatus }[]>`
         SELECT user_id, machine_id, status FROM sessions WHERE id = ${id} FOR UPDATE`;
       if (!row || row.user_id !== user.id) return 'not_found';
       if (!DELETABLE_STATUSES.includes(row.status)) return 'active';
       await tx`DELETE FROM shares WHERE session_id = ${id}`;
+      // 그 세션의 승인·질문과 보낸 글도 함께 지운다(세션 행과 FK로 묶여 있지 않다).
+      const requests = await tx<{ id: string }[]>`DELETE FROM reply_requests WHERE session_id = ${id} RETURNING id`;
+      await tx`DELETE FROM session_messages WHERE session_id = ${id}`;
+      gone = requests.map((r) => r.id);
       await tx`DELETE FROM transcript_lines WHERE session_id = ${id}`;
       await tx`DELETE FROM sessions WHERE id = ${id}`;
       // 지운 표시를 남긴다 — 늦게 도착한 옛 이벤트나 종료 알림으로 카드가 다시 생기지 않게(ingest/apply.ts).
@@ -118,6 +123,9 @@ export function queryRoutes(deps: Deps): Hono<Env> {
     });
     if (result === 'not_found') throw fail(404, 'not_found');
     if (result === 'active') throw fail(409, 'session_active');
+    // 붙잡혀 있던 wait·inbox 요청을 바로 풀어 준다.
+    deps.reply.notifyRequests(gone);
+    deps.reply.dropInbox({ sessionId: id });
     deps.bus.publish(user.id, { type: 'removed', sessionIds: [id] });
     return c.json({ ok: true });
   });

@@ -8,6 +8,8 @@ import { loadConfig } from './config';
 import { connect, migrate } from './db/index';
 import { runCleanup } from './jobs/cleanup';
 import { runLostCheck } from './jobs/lost';
+import { createReplyHub } from './reply/hub';
+import { sweepStaleRequests } from './reply/sweep';
 import { createBus } from './stream/bus';
 import type { Deps } from './types';
 
@@ -37,6 +39,7 @@ async function main(): Promise<void> {
     bus: createBus(),
     google: createGoogleClient(config),
     now: () => new Date(),
+    reply: createReplyHub(),
     webDist: existsSync(webDist) ? webDist : undefined,
   };
   const app = createApp(deps);
@@ -44,7 +47,11 @@ async function main(): Promise<void> {
   const guard = (name: string, job: () => Promise<unknown>) => () => {
     job().catch((err) => console.error(`[jobs] ${name} 실패:`, err));
   };
-  const lostTimer = setInterval(guard('끊김 판정', () => runLostCheck(deps)), LOST_CHECK_MS);
+  const lostTimer = setInterval(guard('끊김 판정', async () => {
+    await runLostCheck(deps);
+    // 플러그인이 오래 다시 묻지 않은 승인·질문도 같은 주기로 치운다.
+    await sweepStaleRequests(deps);
+  }), LOST_CHECK_MS);
   const cleanup = guard('보관 정리', async () => {
     console.log('[jobs] 보관 정리:', JSON.stringify(await runCleanup(deps)));
   });

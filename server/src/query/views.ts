@@ -1,6 +1,7 @@
 // DB 행 → 계약의 뷰 타입. 조회 API·스트림·수집이 함께 쓴다.
 import type { AccountView, DashboardSnapshot, LogLine, LogResponse, MachineView, SessionStatus, SessionView, SettingsView } from '@c-monitor/shared';
-import type { Q } from '../types';
+import { machineCanReply, statusCanReply, toPendingView, type PendingRow } from '../reply/pending';
+import type { Bus, Q } from '../types';
 
 export const ONLINE_MS = 10 * 60_000;
 export const DEFAULT_SETTINGS: SettingsView = { lostMinutes: 10, endHours: 24, keepChatDays: 30, keepUsageDays: 90 };
@@ -12,7 +13,12 @@ export type SessionRow = {
   branch: string | null; model: string | null; status: SessionStatus; seen: boolean;
   started_at: Date; last_event_at: Date; ended_at: Date | null;
   activity_label: string | null; activity_text: string | null;
+  remote_url: string | null;
 };
+
+/** 세션 뷰의 원격 답장 부분. 소유자가 아닌 사람에게 가는 뷰는 NO_REPLY를 쓴다. */
+export type ReplyInfo = Pick<SessionView, 'pending' | 'canReply' | 'queuedMessages'>;
+const NO_REPLY: ReplyInfo = { pending: null, canReply: false, queuedMessages: 0 };
 
 /** 카드 제목: cwd의 마지막 폴더 이름(Windows·POSIX 경로 모두). */
 export function folderName(cwd: string): string {
@@ -20,7 +26,7 @@ export function folderName(cwd: string): string {
   return parts.at(-1) ?? cwd;
 }
 
-export function toSessionView(r: SessionRow): SessionView {
+export function toSessionView(r: SessionRow, reply: ReplyInfo = NO_REPLY): SessionView {
   return {
     id: r.id,
     machineId: r.machine_id,
@@ -35,14 +41,67 @@ export function toSessionView(r: SessionRow): SessionView {
     lastEventAt: r.last_event_at.toISOString(),
     endedAt: r.ended_at ? r.ended_at.toISOString() : null,
     activity: r.activity_label === null ? null : { label: r.activity_label, text: r.activity_text ?? '' },
+    pending: reply.pending,
+    canReply: reply.canReply,
+    queuedMessages: reply.queuedMessages,
+    remoteUrl: r.remote_url,
   };
 }
 
-/** 세션 id들의 뷰를 소유자와 함께 돌려준다(publish용). */
+/**
+ * 세션 행들을 뷰로 바꾼다. 원격 답장 정보(기다리는 요청·답할 수 있는지·쌓인 글)는
+ * 보는 사람(viewerId)이 그 세션의 소유자일 때만 채운다. viewerId를 주지 않으면 소유자가 보는 것으로 한다.
+ */
+export async function toSessionViews(sql: Q, rows: SessionRow[], viewerId?: string): Promise<SessionView[]> {
+  const own = rows.filter((r) => viewerId === undefined || r.user_id === viewerId);
+  const info = new Map<string, ReplyInfo>();
+  if (own.length > 0) {
+    const ids = own.map((r) => r.id);
+    const machineIds = [...new Set(own.map((r) => r.machine_id))];
+    const [machines, pendings, queued] = await Promise.all([
+      sql<{ id: string; remote_reply: boolean; plugin_version: string; revoked_at: Date | null }[]>`
+        SELECT id, remote_reply, plugin_version, revoked_at FROM machines WHERE id IN ${sql(machineIds)}`,
+      // 세션마다 가장 오래된 요청 하나와, 함께 기다리는 요청 수.
+      sql<(PendingRow & { total: number })[]>`
+        SELECT DISTINCT ON (session_id) id, session_id, kind, tool_name, tool_input, questions, session_allow, created_at,
+               (count(*) OVER (PARTITION BY session_id))::int AS total
+        FROM reply_requests WHERE status = 'pending' AND session_id IN ${sql(ids)}
+        ORDER BY session_id, created_at, id`,
+      sql<{ session_id: string; n: number }[]>`
+        SELECT session_id, count(*)::int AS n FROM session_messages
+        WHERE delivered_at IS NULL AND session_id IN ${sql(ids)} GROUP BY session_id`,
+    ]);
+    const machineOk = new Map(machines.map((m) => [
+      m.id, machineCanReply({ remoteReply: m.remote_reply, revoked: m.revoked_at !== null, pluginVersion: m.plugin_version }),
+    ]));
+    const pendingOf = new Map(pendings.map((p) => [p.session_id, toPendingView(p, p.total - 1)]));
+    const queuedOf = new Map(queued.map((q) => [q.session_id, q.n]));
+    for (const r of own) {
+      const canAnswer = machineOk.get(r.machine_id) ?? false;
+      info.set(r.id, {
+        // 답할 수 없는 컴퓨터의 요청은 보여 주지 않는다(눌러도 409가 될 뿐이다).
+        pending: canAnswer ? pendingOf.get(r.id) ?? null : null,
+        canReply: canAnswer && statusCanReply(r.status),
+        queuedMessages: queuedOf.get(r.id) ?? 0,
+      });
+    }
+  }
+  return rows.map((r) => toSessionView(r, info.get(r.id)));
+}
+
+/** 세션 id들의 뷰를 소유자와 함께 돌려준다(publish용 — 소유자가 보는 모양). */
 export async function loadSessionViews(sql: Q, ids: string[]): Promise<{ userId: string; session: SessionView }[]> {
   if (ids.length === 0) return [];
   const rows = await sql<SessionRow[]>`SELECT * FROM sessions WHERE id IN ${sql(ids)}`;
-  return rows.map((r) => ({ userId: r.user_id, session: toSessionView(r) }));
+  const views = await toSessionViews(sql, rows);
+  return rows.map((r, i) => ({ userId: r.user_id, session: views[i]! }));
+}
+
+/** 바뀐 세션들을 소유자에게 다시 내보낸다. */
+export async function publishSessions(deps: { sql: Q; bus: Bus }, ids: Iterable<string>): Promise<void> {
+  for (const { userId, session } of await loadSessionViews(deps.sql, [...new Set(ids)])) {
+    deps.bus.publish(userId, { type: 'session', session });
+  }
 }
 
 export async function loadSettings(sql: Q, userId: string): Promise<SettingsView> {
@@ -127,9 +186,10 @@ export async function loadAccountViews(sql: Q, userId: string, now: Date, email?
 /**
  * 대시보드 한 화면분. 기본은 폐기된 기기와 그 세션, 그리고 종료된 지 end_hours가 지난 세션을 뺀다.
  * history=true면 모두 포함한다(기록 탭).
+ * viewerId는 보는 사람 — 남의 것을 보는 경우(관리자 열람)에는 원격 답장 정보를 비운다. 기본은 본인.
  */
 export async function loadSnapshot(
-  sql: Q, userId: string, now: Date, opts: { history?: boolean } = {},
+  sql: Q, userId: string, now: Date, opts: { history?: boolean; viewerId?: string } = {},
 ): Promise<DashboardSnapshot> {
   const settings = await loadSettings(sql, userId);
   const cutoff = new Date(now.getTime() - settings.endHours * 60 * 60_000);
@@ -146,7 +206,7 @@ export async function loadSnapshot(
     loadMachineViews(sql, userId, now, { includeRevoked: opts.history }),
     loadAccountViews(sql, userId, now),
   ]);
-  return { sessions: sessionRows.map(toSessionView), machines, accounts };
+  return { sessions: await toSessionViews(sql, sessionRows, opts.viewerId ?? userId), machines, accounts };
 }
 
 type LineRow = {
