@@ -14,6 +14,7 @@ export type SessionRow = {
   started_at: Date; last_event_at: Date; ended_at: Date | null;
   activity_label: string | null; activity_text: string | null;
   remote_url: string | null;
+  telegram: boolean;
 };
 
 /** 세션 뷰의 원격 답장 부분. 소유자가 아닌 사람에게 가는 뷰는 NO_REPLY를 쓴다. */
@@ -45,6 +46,7 @@ export function toSessionView(r: SessionRow, reply: ReplyInfo = NO_REPLY): Sessi
     canReply: reply.canReply,
     queuedMessages: reply.queuedMessages,
     remoteUrl: r.remote_url,
+    telegram: r.telegram,
   };
 }
 

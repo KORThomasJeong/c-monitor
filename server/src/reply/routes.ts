@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import type { ZodType, ZodTypeDef } from 'zod';
 import {
-  MAX_BATCH_BYTES, MachinePatchSchema, REPLY_POLL_SECONDS, REPLY_STALE_SECONDS,
+  MAX_BATCH_BYTES, MachinePatchSchema, REPLY_POLL_SECONDS,
   ReplyAskSchema, ReplyInboxSchema, ReplyRequestSchema, ReplyWaitSchema,
   type ReplyAnswer, type ReplyAskResponse, type ReplyInboxResponse, type ReplyResponse, type ReplyWaitResponse,
   type SessionStatus,
@@ -14,8 +14,10 @@ import { machineGuard, requireMachine, requireUser, userGuard } from '../auth/gu
 import { loadMachineViews, publishSessions } from '../query/views';
 import type { Deps, Env } from '../types';
 import { fail, parseJsonBody, readLimitedText } from '../util';
+import { notifyRequest } from '../notify/notify';
+import { submitReply } from './answer';
 import { tryDeliver } from './deliver';
-import { machineCanReply, statusCanReply } from './pending';
+import { statusCanReply } from './pending';
 
 /** 스위치를 바꿀 때 다시 내보내는 세션 수의 상한. */
 const MACHINE_SESSION_LIMIT = 500;
@@ -88,6 +90,8 @@ export function replyRoutes(deps: Deps): Hono<Env> {
         WHERE id = ${sessionId} AND status <> 'end' RETURNING id`;
     });
     if (touched.length > 0) await publishSessions(deps, [sessionId]);
+    // 텔레그램 알림(비동기 — 이 요청을 기다리게 하지 않는다).
+    notifyRequest(deps, requestId);
     return c.json<ReplyAskResponse>({ requestId });
   });
 
@@ -144,68 +148,12 @@ export function replyRoutes(deps: Deps): Hono<Env> {
     const id = c.req.param('id');
     const body = await readLimited(c.req.raw, ReplyRequestSchema);
 
-    const [s] = await sql<{
-      user_id: string; status: SessionStatus; remote_reply: boolean; plugin_version: string; revoked_at: Date | null;
-    }[]>`
-      SELECT s.user_id, s.status, m.remote_reply, m.plugin_version, m.revoked_at
-      FROM sessions s JOIN machines m ON m.id = s.machine_id WHERE s.id = ${id}`;
-    if (!s || s.user_id !== user.id) throw fail(404, 'not_found');
-    const machineOk = machineCanReply({ remoteReply: s.remote_reply, revoked: s.revoked_at !== null, pluginVersion: s.plugin_version });
-    if (!machineOk || !statusCanReply(s.status)) throw fail(409, 'reply_disabled');
-
-    const now = deps.now();
-
-    if (body.type === 'message') {
-      await sql`
-        INSERT INTO session_messages (id, session_id, machine_id, user_id, text, created_at)
-        SELECT ${randomUUID()}, id, machine_id, user_id, ${body.text}, ${now} FROM sessions WHERE id = ${id}`;
-      // 세션이 done이고 대기자가 붙어 있으면 바로 넘어간다. 아니면 쌓아 둔다.
-      const delivered = await tryDeliver(deps, id);
-      if (!delivered) await publishSessions(deps, [id]);
-      return c.json<ReplyResponse>({ ok: true, queued: !delivered });
+    const result = await submitReply(deps, user.id, id, body);
+    if (!result.ok) {
+      const status = result.error === 'not_found' ? 404 : result.error === 'invalid_body' ? 400 : 409;
+      throw fail(status, result.error);
     }
-
-    const requestId = body.requestId;
-    const answer: ReplyAnswer = body.type === 'answer'
-      ? { type: 'answer', answers: body.answers }
-      : { type: 'permission', behavior: body.behavior, ...(body.message ? { message: body.message } : {}) };
-
-    const outcome = await sql.begin(async (tx): Promise<'ok' | 'no_pending' | 'stale' | 'invalid'> => {
-      // 행을 잠가 같은 요청에 답이 두 번 들어가지 않게 한다(첫 번째만 적용).
-      const [r] = await tx<{ kind: 'permission' | 'question'; session_allow: string | null; polled_at: Date }[]>`
-        SELECT kind, session_allow, polled_at FROM reply_requests
-        WHERE id = ${requestId} AND session_id = ${id} AND status = 'pending' FOR UPDATE`;
-      if (!r) return 'no_pending';
-      // 플러그인이 오래 다시 묻지 않았으면 답을 받을 훅이 이미 없다.
-      if (now.getTime() - r.polled_at.getTime() > REPLY_STALE_SECONDS * 1000) {
-        await tx`UPDATE reply_requests SET status = 'gone' WHERE id = ${requestId}`;
-        return 'stale';
-      }
-      // 요청 종류에 맞는 답만 받는다: 질문에는 answer 또는 거부, 승인에는 permission.
-      // "이 세션 동안 허용"은 플러그인이 그 선택을 줬을 때만.
-      const fits = answer.type === 'answer'
-        ? r.kind === 'question'
-        : r.kind === 'question'
-          ? answer.behavior === 'deny'
-          : answer.behavior !== 'allow_session' || r.session_allow !== null;
-      if (!fits) return 'invalid';
-      await tx`
-        UPDATE reply_requests SET status = 'answered', answer = ${tx.json(answer as never)}, answered_at = ${now}
-        WHERE id = ${requestId}`;
-      // 더 기다리는 요청이 없으면 세션은 다시 일하는 중이다(뒤따르는 이벤트를 기다리지 않고 바로 반영).
-      await tx`
-        UPDATE sessions SET status = 'run', last_event_at = GREATEST(last_event_at, ${now})
-        WHERE id = ${id} AND status = 'wait'
-          AND NOT EXISTS (SELECT 1 FROM reply_requests WHERE session_id = ${id} AND status = 'pending')`;
-      return 'ok';
-    });
-
-    if (outcome === 'invalid') throw fail(400, 'invalid_body');
-    if (outcome === 'no_pending') throw fail(409, 'no_pending');
-    hub.notifyRequests([requestId]);
-    await publishSessions(deps, [id]);
-    if (outcome === 'stale') throw fail(409, 'no_pending');
-    return c.json<ReplyResponse>({ ok: true, queued: false });
+    return c.json<ReplyResponse>({ ok: true, queued: result.queued });
   });
 
   // 컴퓨터별 원격 답장 스위치. 소유자만.

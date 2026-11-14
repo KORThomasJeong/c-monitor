@@ -4,11 +4,14 @@ import {
   type HookEvent, type IngestBatch, type LogLine, type SessionStatus,
 } from '@c-monitor/shared';
 import { loadAccountViews, loadMachineViews, loadSessionViews, ONLINE_MS, type SessionRow } from '../query/views';
+import { notifyLimits, notifySessionChanges, type StatusChange } from '../notify/notify';
 import { tryDeliver } from '../reply/deliver';
 import type { Deps, Machine } from '../types';
 import { head } from '../util';
 
 const ACTIVITY_MAX = 200;
+/** 텔레그램 알림에 붙이는 마지막 답·알림 문구의 최대 길이. */
+const ACTIVITY_NOTE_MAX = 300;
 
 /**
  * 이 이벤트가 오면, 그보다 먼저 등록된 승인·질문은 터미널에서 이미 답한 것이다(계획의 동작 규칙 3-②).
@@ -159,10 +162,18 @@ export async function applyBatch(deps: Deps, machine: Machine, batch: IngestBatc
     if (revived.size > 0) await tx`DELETE FROM deleted_sessions WHERE session_id IN ${tx([...revived])}`;
 
     const dirty = new Set<string>();
+    /** 세션마다 이 묶음에서 거친 상태들(알림 판단용)과, 알림에 붙일 한 줄. */
+    const trail = new Map<string, SessionStatus[]>();
+    const noteOf = new Map<string, string>();
     for (const e of events) {
       const id = sid(e.sessionId);
-      states.set(id, applyEvent(states.get(id) ?? null, e, now));
+      const next = applyEvent(states.get(id) ?? null, e, now);
+      states.set(id, next);
       dirty.add(id);
+      trail.set(id, [...(trail.get(id) ?? []), next.status]);
+      const note = e.event === 'Stop' ? e.data?.last_assistant_message
+        : e.event === 'Notification' && e.data?.notification_type !== 'idle_prompt' ? e.data?.message : undefined;
+      if (typeof note === 'string' && note.trim()) noteOf.set(id, head(note, ACTIVITY_NOTE_MAX));
     }
     // 이벤트 없이 대화만 먼저 온 세션은 최소한의 행을 만들어 둔다.
     // 다만 지운 세션(되살아나지 않은 것)의 대화는 받지 않는다.
@@ -289,17 +300,33 @@ export async function applyBatch(deps: Deps, machine: Machine, batch: IngestBatc
       }
     }
 
+    let limitsInserted = false;
     if (batch.limits) {
       const l = batch.limits;
       const rows = await tx`
         INSERT INTO limits (user_id, account, five_pct, five_resets, seven_pct, seven_resets, at)
         VALUES (${userId}, ${l.account}, ${l.fiveHourPct}, ${l.fiveHourResetsAt}, ${l.sevenDayPct}, ${l.sevenDayResetsAt}, ${l.at})
         ON CONFLICT DO NOTHING RETURNING account`;
-      if (rows.length > 0) accountsChanged.add(l.account);
+      if (rows.length > 0) {
+        accountsChanged.add(l.account);
+        limitsInserted = true;
+      }
+    }
+
+    // 텔레그램 알림에 쓸 상태 바뀜. 기다림은 다른 상태에서 wait가 된 것, 끝남은 이 묶음 안에서 작업 중(run·wait)을 거쳐 done이 된 것만.
+    const changes: StatusChange[] = [];
+    for (const id of dirtyIds) {
+      const from = statusBefore.get(id) ?? null;
+      const to = states.get(id)!.status;
+      const passed = [from, ...(trail.get(id) ?? []).slice(0, -1)];
+      const worked = (trail.get(id)?.length ?? 0) > 0 && passed.some((x) => x === 'run' || x === 'wait');
+      if ((to === 'wait' && passed.some((x) => x !== 'wait')) || (to === 'done' && worked)) {
+        changes.push({ sessionId: id, from, to, text: noteOf.get(id) });
+      }
     }
 
     return {
-      accepted: events.length, dirty: dirtyIds, newLines, accountsChanged: [...accountsChanged], goneRequests,
+      accepted: events.length, dirty: dirtyIds, changes, limitsInserted, newLines, accountsChanged: [...accountsChanged], goneRequests,
       done: dirtyIds.filter((id) => states.get(id)!.status === 'done'),
       ended: dirtyIds.filter((id) => states.get(id)!.status === 'end'),
     };
@@ -329,6 +356,10 @@ export async function applyBatch(deps: Deps, machine: Machine, batch: IngestBatc
     const [view] = await loadMachineViews(sql, userId, now, { id: machine.id });
     if (view) deps.bus.publish(userId, { type: 'machine', machine: view });
   }
+
+  // 텔레그램 알림(큐에 넣기만 하고 기다리지 않는다).
+  notifySessionChanges(deps, out.changes);
+  if (out.limitsInserted && batch.limits) notifyLimits(deps, userId, batch.limits);
 
   // 세션이 done이 됐으면 쌓여 있던 글을 대기자에게 넘겨 본다(넘기면 세션을 다시 내보낸다).
   for (const id of out.done) {

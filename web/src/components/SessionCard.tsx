@@ -5,7 +5,7 @@ import type { SessionView } from '@c-monitor/shared';
 import { formatAgo, formatClock } from '../lib/format';
 import { canDelete, cardClass, elapsedText, shortTime, statusLabel, TAG_COLOR, tileClass, type AccountStyle } from '../lib/view';
 import type { ReplyCtl } from '../state/reply';
-import { AlertIcon, BranchIcon, CheckIcon, CloseIcon, PowerIcon, SendIcon, SpinIcon, WifiOffIcon } from './Icons';
+import { AlertIcon, BellOffIcon, BranchIcon, CheckIcon, CloseIcon, PowerIcon, SendIcon, SpinIcon, WifiOffIcon } from './Icons';
 import { PendingReply } from './Reply';
 
 /** 지우기 버튼. 확인 창 없이 한 번 누르면 바로 지운다. */
@@ -28,6 +28,9 @@ type CardProps = {
   reply?: ReplyCtl;
 };
 
+/** 내 세션인데 텔레그램 알림을 꺼 두었는가(카드에 작은 표시) */
+export const telegramOff = (s: SessionView) => s.telegram === false && !s.sharedBy;
+
 /** 카드·타일에 답 버튼을 보일 수 있는가 */
 export const canAnswer = (s: SessionView) => !!s.pending && s.canReply;
 
@@ -36,14 +39,24 @@ export function SessionCard({ s, acct, selected, now, onOpen, onDelete, reply }:
   const del = onDelete && canDelete(s.status);
   const answer = !!reply && canAnswer(s);
   const err = reply && !answer ? reply.error(s.id) : null;
+  const tgOff = telegramOff(s);
   const wrap = ['card-wrap', del && 'can-del', answer && 'has-reply', answer && cardClass(s, selected).split(' ').filter((c) => c !== 'card').join(' ')]
     .filter(Boolean).join(' ');
   return (
     <div className={wrap}>
-      <button type="button" className={cardClass(s, selected)} onClick={() => onOpen(s.id)} aria-label={`${s.name} · ${label}`} aria-pressed={selected}>
+      <button
+        type="button"
+        className={cardClass(s, selected)}
+        onClick={() => onOpen(s.id)}
+        aria-label={`${s.name} · ${label}${tgOff ? ' · 텔레그램 알림 끔' : ''}`}
+        aria-pressed={selected}
+      >
         <span className="c-top">
           <span className={`tag ${TAG_COLOR[s.status]}`}><span className="dot" />{label}</span>
-          <span className="c-time">{elapsedText(s, now)}</span>
+          <span className="c-right">
+            {tgOff && <span className="c-tgoff" title="텔레그램 알림 끔" data-testid="tg-off"><BellOffIcon size={14} /></span>}
+            <span className="c-time">{elapsedText(s, now)}</span>
+          </span>
         </span>
         <span className="c-name" title={s.cwd}>{s.name}</span>
         <span className="c-meta">

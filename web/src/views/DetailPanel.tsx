@@ -11,13 +11,14 @@ import {
 } from '@c-monitor/shared';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import {
-  AlertIcon, ArrowDownIcon, BackIcon, CheckCircleIcon, ChevronDownIcon, ChevronUpIcon, ClockIcon, CloseIcon, LockIcon,
+  AlertIcon, ArrowDownIcon, BackIcon, BellIcon, BellOffIcon, CheckCircleIcon, ChevronDownIcon, ChevronUpIcon, ClockIcon, CloseIcon, LockIcon,
   ExternalIcon, InfoIcon, PanelIcon, PowerIcon, SearchIcon, TerminalIcon, TrashIcon,
 } from '../components/Icons';
 import { Composer, PendingReply } from '../components/Reply';
 import { canAnswer } from '../components/SessionCard';
 import { isClosed, replyBlockReason, safeRemoteUrl } from '../lib/reply';
 import type { ReplyCtl } from '../state/reply';
+import { Link } from '../router';
 import { formatClock, formatDuration, formatTime } from '../lib/format';
 import { canDelete, splitMatches, statusLabel, TAG_COLOR, toolText } from '../lib/view';
 import type { LogWindow } from '../state/store';
@@ -40,7 +41,45 @@ type Props = {
   onDelete?: () => void;
   /** 원격 답장. 없으면 답 버튼·입력창을 그리지 않는다. */
   reply?: ReplyCtl;
+  /** 세션별 텔레그램 알림 스위치. 없거나 서버에 봇이 없으면 그리지 않는다. */
+  telegram?: TelegramCtl;
 };
+
+export type TelegramCtl = {
+  /** 서버에 봇이 있는가 */
+  available: boolean;
+  /** 내가 텔레그램을 연결했는가. 아니면 스위치를 막고 안내한다. */
+  linked: boolean;
+  onToggle: (sessionId: string, on: boolean) => void;
+};
+
+/** 상세 머리의 "텔레그램 알림" 스위치. 공유받은 세션에는 그리지 않는다(소유자만 바꿀 수 있다). */
+function TelegramSwitch({ s, ctl }: { s: SessionView; ctl: TelegramCtl }) {
+  const id = `tg-${s.id}`;
+  const on = ctl.linked && s.telegram;
+  return (
+    <span className="tg-sw">
+      <label htmlFor={id} className="tg-sw-label">
+        {on ? <BellIcon size={14} /> : <BellOffIcon size={14} />}텔레그램 알림
+      </label>
+      <input
+        id={id}
+        className="sw"
+        type="checkbox"
+        role="switch"
+        checked={on}
+        disabled={!ctl.linked}
+        aria-describedby={ctl.linked ? undefined : `${id}-hint`}
+        onChange={(e) => ctl.onToggle(s.id, e.target.checked)}
+      />
+      {!ctl.linked && (
+        <span className="remote-hint" id={`${id}-hint`}>
+          <Link to="/settings#notify">설정 › 알림</Link>에서 텔레그램을 연결하면 켤 수 있습니다
+        </span>
+      )}
+    </span>
+  );
+}
 
 /** 찾은 글자를 <mark>로 감싼다. */
 function Hl({ text, q }: { text: string; q: string }) {
@@ -200,7 +239,7 @@ function useFitHeight(ref: { current: HTMLElement | null }) {
 
 export function DetailPanel(props: Props) {
   const { session: s, machine, log, tab, onTab, onClose, connected, now } = props;
-  const { onLoadOlder, onJump, onLatest, onSearch, onDelete, reply } = props;
+  const { onLoadOlder, onJump, onLatest, onSearch, onDelete, reply, telegram } = props;
   const logRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   useFitHeight(panelRef);
@@ -406,6 +445,7 @@ export function DetailPanel(props: Props) {
   const blocked = reply ? replyBlockReason(s, machine) : null;
   const remoteUrl = safeRemoteUrl(s.remoteUrl);
   const remoteHint = !remoteUrl && !isClosed(s) && !s.sharedBy;
+  const tgSwitch = !!telegram?.available && !s.sharedBy;
 
   return (
     <aside className="panel" aria-label="세션 상세" ref={panelRef}>
@@ -426,15 +466,16 @@ export function DetailPanel(props: Props) {
             <div className="kv" key={k}><span className="k">{k}</span><span className="v" title={v}>{v}</span></div>
           ))}
         </div>
-        {(remoteUrl || remoteHint) && (
+        {(remoteUrl || remoteHint || tgSwitch) && (
           <div className="p-actions">
             {remoteUrl ? (
               <a className="btn sm" href={remoteUrl} target="_blank" rel="noopener noreferrer" title="공식 원격 제어 화면을 새 탭에서 엽니다">
                 <ExternalIcon size={14} />원격 제어로 열기
               </a>
-            ) : (
+            ) : remoteHint ? (
               <p className="remote-hint"><InfoIcon size={14} />세션에서 <code>/remote-control</code> 을 실행하면 원격 제어 링크가 생깁니다</p>
-            )}
+            ) : null}
+            {tgSwitch && telegram && <TelegramSwitch s={s} ctl={telegram} />}
           </div>
         )}
       </div>

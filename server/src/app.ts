@@ -4,6 +4,7 @@ import { HTTPException } from 'hono/http-exception';
 import { authRoutes } from './auth/routes';
 import { deviceRoutes } from './device/routes';
 import { ingestRoutes } from './ingest/routes';
+import { notifyRoutes } from './notify/routes';
 import { queryRoutes } from './query/routes';
 import { replyRoutes } from './reply/routes';
 import { staticHandler } from './static';
@@ -26,6 +27,7 @@ export function createApp(deps: Deps): Hono<Env> {
   app.route('/', ingestRoutes(deps));
   app.route('/', queryRoutes(deps));
   app.route('/', replyRoutes(deps));
+  app.route('/', notifyRoutes(deps));
   app.route('/', streamRoutes(deps));
 
   // 없는 API·auth 경로는 SPA로 떨어지지 않고 404.

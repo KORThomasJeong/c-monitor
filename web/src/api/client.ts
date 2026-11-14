@@ -1,15 +1,20 @@
 // 서버 API 호출. 쿠키 로그인 기준이며 401·403(pending)은 알맞은 화면으로 보낸다.
 import {
   API,
+  type AdminTelegramView,
   SEARCH_LIMIT,
   type DashboardSnapshot,
   type LogResponse,
   type LogSearchResponse,
   type MachineView,
   type MeResponse,
+  type NotifySettings,
+  type NotifyView,
   type ReplyRequest,
   type ReplyResponse,
+  type SessionView,
   type SettingsView,
+  type TelegramLinkResponse,
   type UserView,
 } from '@c-monitor/shared';
 import { navigate } from '../router';
@@ -116,6 +121,29 @@ export const patchMachine = (id: string, patch: { remoteReply: boolean }) =>
  */
 export const replyToSession = (sessionId: string, body: ReplyRequest) =>
   request<ReplyResponse>('POST', `${sessionPath(sessionId)}/reply`, body);
+
+// ── 알림(텔레그램) ── 경로는 shared/src/contract.ts "알림(텔레그램)" 절과 같다.
+const NOTIFY = '/api/notify';
+export const getNotify = () => request<NotifyView>('GET', NOTIFY);
+/** 알림 항목 전체를 보낸다. 바뀐 상태 전체(NotifyView)를 돌려받는다. */
+export const putNotifySettings = (s: NotifySettings) => request<NotifyView>('PUT', `${NOTIFY}/settings`, s);
+/** 연결 코드와 텔레그램 링크(10분 유효). 새로 받으면 옛 코드는 무효가 된다. */
+export const createTelegramLink = () => request<TelegramLinkResponse>('POST', `${NOTIFY}/telegram/link`);
+export const unlinkTelegram = () => request<NotifyView>('DELETE', `${NOTIFY}/telegram`);
+/** 409 not_linked = 연결된 텔레그램이 없음. */
+export const sendTelegramTest = () => request<{ ok: true }>('POST', `${NOTIFY}/telegram/test`);
+
+/** 세션별 설정(지금은 텔레그램 알림 켜기/끄기). 소유자만. 응답의 session으로 화면을 맞춘다. */
+export const patchSession = (sessionId: string, patch: { telegram: boolean }) =>
+  request<{ session: SessionView } | undefined>('PATCH', sessionPath(sessionId), patch);
+
+// 관리자: 모두가 함께 쓰는 텔레그램 봇. 토큰은 저장만 하고 다시 받지 않는다(끝 4자리만 내려온다).
+const ADMIN_TG = '/api/admin/telegram';
+export const getAdminTelegram = () => request<AdminTelegramView>('GET', ADMIN_TG);
+/** 400 invalid_token = 텔레그램이 토큰을 받아 주지 않음. */
+export const putAdminTelegram = (token: string) => request<AdminTelegramView>('PUT', ADMIN_TG, { token });
+/** 봇 끄기. 사용자 연결 정보는 서버에 남는다. */
+export const deleteAdminTelegram = () => request<AdminTelegramView>('DELETE', ADMIN_TG);
 
 /** 오류 응답 본문의 코드({error} 또는 {code}). */
 export function errorCode(e: unknown): string | null {

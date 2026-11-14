@@ -201,6 +201,8 @@ export type Dashboard = DashboardState & {
   jumpTo: (sessionId: string, seq: number) => Promise<void>;
   /** 화면에서 바로 없애고 서버에 지우기를 요청한다. 실패하면 되돌리고 false. */
   removeSession: (sessionId: string) => Promise<boolean>;
+  /** 세션별 텔레그램 알림을 화면에서 바로 바꾸고 서버에 저장한다. 실패하면 되돌리고 false. */
+  setTelegram: (sessionId: string, on: boolean) => Promise<boolean>;
 };
 
 export function useDashboard(): Dashboard {
@@ -302,5 +304,26 @@ export function useDashboard(): Dashboard {
     }
   }, []);
 
-  return { ...state, connected, markSeen, openLog, loadOlder, jumpTo, removeSession };
+  // 세션마다 스위치를 누른 차례. 늦게 온 옛 응답·실패가 새로 누른 값을 덮지 않게 한다.
+  const tgSeq = useRef<Record<string, number>>({});
+  const setTelegram = useCallback(async (sessionId: string, on: boolean) => {
+    const cur = ref.current.sessions.find((s) => s.id === sessionId);
+    if (!cur) return false;
+    const n = (tgSeq.current[sessionId] = (tgSeq.current[sessionId] ?? 0) + 1);
+    const put = (v: boolean) => {
+      const now = ref.current.sessions.find((s) => s.id === sessionId);
+      if (now && now.telegram !== v) dispatch({ type: 'session', session: { ...now, telegram: v } });
+    };
+    put(on);
+    try {
+      const res = await api.patchSession(sessionId, { telegram: on });
+      if (tgSeq.current[sessionId] === n && res?.session?.id === sessionId) dispatch({ type: 'session', session: res.session });
+      return true;
+    } catch {
+      if (tgSeq.current[sessionId] === n) put(!on);
+      return false;
+    }
+  }, []);
+
+  return { ...state, connected, markSeen, openLog, loadOlder, jumpTo, removeSession, setTelegram };
 }

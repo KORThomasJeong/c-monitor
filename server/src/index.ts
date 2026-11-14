@@ -8,6 +8,9 @@ import { loadConfig } from './config';
 import { connect, migrate } from './db/index';
 import { runCleanup } from './jobs/cleanup';
 import { runLostCheck } from './jobs/lost';
+import { createTelegramHub } from './notify/hub';
+import { startBotFromDb } from './notify/store';
+import { createTelegramClient } from './notify/telegram';
 import { createReplyHub } from './reply/hub';
 import { sweepStaleRequests } from './reply/sweep';
 import { createBus } from './stream/bus';
@@ -40,9 +43,13 @@ async function main(): Promise<void> {
     google: createGoogleClient(config),
     now: () => new Date(),
     reply: createReplyHub(),
+    telegram: createTelegramHub(),
+    telegramClient: (token) => createTelegramClient(token),
     webDist: existsSync(webDist) ? webDist : undefined,
   };
   const app = createApp(deps);
+  // 관리자가 넣어 둔 봇 토큰이 있으면 텔레그램 받기 루프를 시작한다.
+  if (await startBotFromDb(deps)) console.log(`[telegram] 봇 @${deps.telegram.bot?.username} 받기 시작`);
 
   const guard = (name: string, job: () => Promise<unknown>) => () => {
     job().catch((err) => console.error(`[jobs] ${name} 실패:`, err));
@@ -68,6 +75,7 @@ async function main(): Promise<void> {
     clearInterval(lostTimer);
     clearTimeout(cleanupTimer);
     server.close();
+    void deps.telegram.stop();
     sql.end({ timeout: 5 }).finally(() => process.exit(0));
     setTimeout(() => process.exit(0), 6_000).unref();
   };

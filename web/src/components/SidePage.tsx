@@ -20,6 +20,15 @@ export function SidePage({ me, page, tag, title, desc, nav, menuLabel, actions, 
   const theme = useTheme();
   const [active, setActive] = useState(nav[0]?.[0] ?? '');
 
+  // 다른 화면에서 #절 주소로 들어오면(예: /admin#notify) 그 절로 옮긴다.
+  useEffect(() => {
+    const id = decodeURIComponent(window.location.hash.slice(1));
+    if (!id || !nav.some(([n]) => n === id)) return;
+    setActive(id);
+    const el = document.getElementById(id);
+    if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView();
+  }, []); // 처음 그릴 때 한 번만
+
   // 스크롤 위치에 맞춰 메뉴 강조를 옮긴다.
   useEffect(() => {
     const onScroll = () => {

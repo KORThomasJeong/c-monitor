@@ -85,6 +85,34 @@ describe('api client', () => {
     expect(JSON.parse(String(calls[1]!.init.body))).toEqual({ remoteReply: false });
   });
 
+  it('알림(텔레그램): 경로·메서드·본문이 계약과 같다', async () => {
+    const settings = { wait: true, done: false, lost: true, limit: true, limitPct: 90 };
+    await api.getNotify();
+    await api.putNotifySettings(settings);
+    await api.createTelegramLink();
+    await api.unlinkTelegram();
+    await api.sendTelegramTest();
+    await api.patchSession('s/1', { telegram: false });
+    await api.getAdminTelegram();
+    await api.putAdminTelegram('12345:abc');
+    await api.deleteAdminTelegram();
+    expect(calls.map((c) => `${c.init.method ?? 'GET'} ${c.url}`)).toEqual([
+      'GET /api/notify',
+      'PUT /api/notify/settings',
+      'POST /api/notify/telegram/link',
+      'DELETE /api/notify/telegram',
+      'POST /api/notify/telegram/test',
+      'PATCH /api/sessions/s%2F1',
+      'GET /api/admin/telegram',
+      'PUT /api/admin/telegram',
+      'DELETE /api/admin/telegram',
+    ]);
+    expect(JSON.parse(String(calls[1]!.init.body))).toEqual(settings);
+    expect(calls[2]!.init.body).toBeUndefined();
+    expect(JSON.parse(String(calls[5]!.init.body))).toEqual({ telegram: false });
+    expect(JSON.parse(String(calls[7]!.init.body))).toEqual({ token: '12345:abc' });
+  });
+
   it('답장 실패 문구: 409 no_pending·reply_disabled를 구분한다', async () => {
     reply = () => json(409, { error: 'no_pending' });
     const e1 = await api.replyToSession('s1', { type: 'permission', requestId: 'r1', behavior: 'allow' }).catch((e) => e);

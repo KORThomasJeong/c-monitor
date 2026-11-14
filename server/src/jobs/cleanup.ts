@@ -6,8 +6,12 @@ const EVENT_ID_KEEP_DAYS = 7;
 const DELETED_KEEP_DAYS = 30;
 /** 끝난 승인·질문과 웹에서 보낸 글을 남겨 두는 기간. */
 const REPLY_KEEP_DAYS = 7;
+/** 텔레그램 알림 메시지 ↔ 세션 기록(답장·버튼용)을 남겨 두는 기간. */
+const TELEGRAM_MESSAGE_KEEP_DAYS = 7;
+/** 한도 알림 기록. 주간 창(7일)보다 넉넉하게 남겨 같은 창에 다시 보내지 않게 한다. */
+const LIMIT_ALERT_KEEP_DAYS = 30;
 
-export type CleanupResult = { lines: number; limits: number; webSessions: number; deviceRequests: number; eventIds: number; deletedSessions: number; replyRequests: number; sessionMessages: number };
+export type CleanupResult = { lines: number; limits: number; webSessions: number; deviceRequests: number; eventIds: number; deletedSessions: number; replyRequests: number; sessionMessages: number; telegramMessages: number; telegramCodes: number; limitAlerts: number };
 
 export async function runCleanup(deps: Pick<Deps, 'sql' | 'now'>): Promise<CleanupResult> {
   const { sql } = deps;
@@ -42,6 +46,12 @@ export async function runCleanup(deps: Pick<Deps, 'sql' | 'now'>): Promise<Clean
     DELETE FROM session_messages
     WHERE COALESCE(delivered_at, created_at) < ${now}::timestamptz - make_interval(days => ${REPLY_KEEP_DAYS})`;
 
+  const telegramMessages = await sql`
+    DELETE FROM telegram_messages WHERE created_at < ${now}::timestamptz - make_interval(days => ${TELEGRAM_MESSAGE_KEEP_DAYS})`;
+  const telegramCodes = await sql`DELETE FROM telegram_link_codes WHERE expires_at < ${now}`;
+  const limitAlerts = await sql`
+    DELETE FROM limit_alerts WHERE created_at < ${now}::timestamptz - make_interval(days => ${LIMIT_ALERT_KEEP_DAYS})`;
+
   return {
     lines: lines.count,
     limits: limits.count,
@@ -51,5 +61,8 @@ export async function runCleanup(deps: Pick<Deps, 'sql' | 'now'>): Promise<Clean
     deletedSessions: deletedSessions.count,
     replyRequests: replyRequests.count,
     sessionMessages: sessionMessages.count,
+    telegramMessages: telegramMessages.count,
+    telegramCodes: telegramCodes.count,
+    limitAlerts: limitAlerts.count,
   };
 }

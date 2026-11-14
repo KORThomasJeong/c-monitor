@@ -1,5 +1,5 @@
 // 대시보드: 상세 보기(한도 카드·필터·컴퓨터별 묶음·상세 패널)와 간단히 보기(타일)를 오간다.
-import type { MeResponse, SessionStatus } from '@c-monitor/shared';
+import type { MeResponse, NotifyView, SessionStatus } from '@c-monitor/shared';
 import * as api from '../api/client';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Header } from '../components/Header';
@@ -12,7 +12,7 @@ import { accountStyles, groupByMachine, isPcOs, isUnseen, isWaitLike, sortSessio
 import { useReplies } from '../state/reply';
 import { useDashboard } from '../state/store';
 import { Deck } from './Deck';
-import { DetailPanel, type Tab } from './DetailPanel';
+import { DetailPanel, type Tab, type TelegramCtl } from './DetailPanel';
 
 type Filter = 'all' | 'wait' | 'done' | 'run' | 'lost' | 'end';
 const FILTERS: [Filter, string][] = [
@@ -25,7 +25,7 @@ const MODES = ['detail', 'deck'] as const;
 
 export function Dashboard({ me }: { me: MeResponse }) {
   const data = useDashboard();
-  const { sessions, machines, accounts, logs, connected, loaded, markSeen, openLog, loadOlder, jumpTo, removeSession } = data;
+  const { sessions, machines, accounts, logs, connected, loaded, markSeen, openLog, loadOlder, jumpTo, removeSession, setTelegram } = data;
   const reply = useReplies();
   const theme = useTheme();
   const now = useNow();
@@ -35,6 +35,23 @@ export function Dashboard({ me }: { me: MeResponse }) {
   const [tab, setTab] = useState<Tab>('chat');
   const [limitsOpen, setLimitsOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  /** 내 텔레그램 연결 상태(상세 패널의 세션별 스위치용). 못 불러오면 스위치를 그리지 않는다. */
+  const [notify, setNotify] = useState<NotifyView['telegram'] | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    api.getNotify().then((v) => live && setNotify(v?.telegram ?? null)).catch(() => {});
+    return () => { live = false; };
+  }, []);
+
+  const telegram = useMemo<TelegramCtl | undefined>(() => notify ? {
+    available: notify.available,
+    linked: notify.linked,
+    onToggle: (id, on) => {
+      setNotice(null);
+      void setTelegram(id, on).then((ok) => { if (!ok) setNotice('텔레그램 알림을 바꾸지 못했습니다. 잠시 뒤 다시 시도해 주세요.'); });
+    },
+  } : undefined, [notify, setTelegram]);
 
   // 짧은 오류 문구는 몇 초 뒤 사라진다.
   useEffect(() => {
@@ -208,6 +225,7 @@ export function Dashboard({ me }: { me: MeResponse }) {
             onSearch={current ? (q) => api.searchLog(current.id, q) : undefined}
             onDelete={current ? () => void remove(current.id) : undefined}
             reply={reply}
+            telegram={telegram}
           />
         </div>
       )}

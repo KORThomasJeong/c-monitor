@@ -179,3 +179,65 @@ CREATE TABLE IF NOT EXISTS session_messages (
 );
 CREATE INDEX IF NOT EXISTS session_messages_queue_idx ON session_messages (session_id, created_at) WHERE delivered_at IS NULL;
 CREATE INDEX IF NOT EXISTS session_messages_created_idx ON session_messages (created_at);
+
+-- ── 알림(텔레그램) ──────────────────────────────────────────
+-- 사용자별 알림 항목 설정(기본값은 shared NOTIFY_DEFAULTS와 같다).
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS notify_wait      boolean NOT NULL DEFAULT true;
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS notify_done      boolean NOT NULL DEFAULT true;
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS notify_lost      boolean NOT NULL DEFAULT true;
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS notify_limit     boolean NOT NULL DEFAULT true;
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS notify_limit_pct integer NOT NULL DEFAULT 80;
+
+-- 세션별 텔레그램 스위치(기본 켬).
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS telegram boolean NOT NULL DEFAULT true;
+
+-- 공용 봇(행은 하나, id = 1). token_enc는 AES-256-GCM 암호문(notify/secret.ts) — 원문은 저장하지 않는다.
+CREATE TABLE IF NOT EXISTS telegram_bot (
+  id            integer PRIMARY KEY CHECK (id = 1),
+  token_enc     text NOT NULL,
+  token_hint    text NOT NULL,
+  bot_username  text NOT NULL,
+  updated_at    timestamptz NOT NULL
+);
+
+-- 사용자 ↔ 텔레그램 채팅(한 사용자 = 채팅 하나, 한 채팅 = 사용자 하나).
+CREATE TABLE IF NOT EXISTS telegram_links (
+  user_id    text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  chat_id    bigint NOT NULL UNIQUE,
+  name       text,
+  linked_at  timestamptz NOT NULL
+);
+
+-- 연결 코드(10분 유효, 1회용). 사용자마다 하나 — 새로 받으면 옛 코드는 지워진다.
+CREATE TABLE IF NOT EXISTS telegram_link_codes (
+  code        text PRIMARY KEY,
+  user_id     text NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  expires_at  timestamptz NOT NULL
+);
+
+-- 보낸 알림 메시지 ↔ 세션(답장·버튼 처리용, 7일 보관). html·keyboard는 버튼을 누른 뒤 메시지를 고쳐 쓰는 데 쓴다.
+CREATE TABLE IF NOT EXISTS telegram_messages (
+  id          bigserial PRIMARY KEY,
+  chat_id     bigint NOT NULL,
+  message_id  bigint,
+  user_id     text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  session_id  text REFERENCES sessions(id) ON DELETE CASCADE,
+  request_id  text,
+  html        text NOT NULL,
+  keyboard    jsonb,
+  created_at  timestamptz NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS telegram_messages_msg_idx ON telegram_messages (chat_id, message_id);
+CREATE INDEX IF NOT EXISTS telegram_messages_request_idx ON telegram_messages (request_id) WHERE request_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS telegram_messages_created_idx ON telegram_messages (created_at);
+
+-- 한도 알림을 보낸 기록. 같은 창(초기화 시각)에는 한 번만 보낸다. win: five | seven, resets_at: epoch 초(모르면 0).
+CREATE TABLE IF NOT EXISTS limit_alerts (
+  user_id     text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  account     text NOT NULL,
+  win         text NOT NULL CHECK (win IN ('five', 'seven')),
+  resets_at   bigint NOT NULL,
+  created_at  timestamptz NOT NULL,
+  PRIMARY KEY (user_id, account, win, resets_at)
+);
+CREATE INDEX IF NOT EXISTS limit_alerts_created_idx ON limit_alerts (created_at);

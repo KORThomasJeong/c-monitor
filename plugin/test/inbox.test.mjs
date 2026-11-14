@@ -1,6 +1,8 @@
 // 원격 답장 — Stop·SessionStart 훅(bin/inbox.mjs)을 실제 자식 프로세스로 돌려 본다.
 // 글이 오면 stderr에 쓰고 종료 코드 2, 그 밖에는 조용히 0.
+import { spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { isAlive } from '../lib/parent.mjs';
@@ -9,6 +11,10 @@ import { BIN, closedPort, makeSandbox, runNode, startServer } from './helpers.mj
 const INBOX = BIN('inbox.mjs');
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const WAKE = '[c-monitor] 사용자가 웹 대시보드에서 보낸 메시지입니다. 사용자의 다음 요청으로 받아들여 처리하세요.\n\n';
+const INBOX_URL = '/api/reply/inbox';
+const ACK_URL = '/api/reply/inbox/ack';
+const polls = (server) => server.requests.filter((q) => q.url === INBOX_URL);
+const acks = (server) => server.requests.filter((q) => q.url === ACK_URL);
 
 let sb;
 let env;
@@ -25,10 +31,14 @@ const stopInput = (extra = {}) => JSON.stringify({
   session_id: 'sess-1', cwd: sb.root, hook_event_name: 'Stop', stop_hook_active: false, ...extra,
 });
 const run = (input = stopInput()) => runNode(INBOX, [], { env, input });
-/** 차례대로 정해 둔 응답을 주는 가짜 서버(마지막 응답을 되풀이한다). 숫자 status가 있으면 그 상태 코드로 답한다. */
-const inboxServer = (replies) => {
+/**
+ * 차례대로 정해 둔 응답을 주는 가짜 서버(마지막 응답을 되풀이한다). 숫자 status가 있으면 그 상태 코드로 답한다.
+ * 수신 확인(/api/reply/inbox/ack)은 차례에 넣지 않고 ack 응답으로 답한다.
+ */
+const inboxServer = (replies, ack = { status: 200, json: { ok: true } }) => {
   let i = 0;
-  return startServer(() => {
+  return startServer((req) => {
+    if (req.url === ACK_URL) return ack;
     const r = replies[Math.min(i, replies.length - 1)];
     i += 1;
     return typeof r.status === 'number' ? r : { status: 200, json: r };
@@ -71,7 +81,7 @@ describe('inbox.mjs', () => {
       expect(r.code).toBe(2);
       expect(r.stderr).toBe(WAKE + text);
       expect(r.stdout.length).toBe(0);
-      expect(server.requests).toHaveLength(1);
+      expect(polls(server)).toHaveLength(1);
       const q = server.requests[0];
       expect(q.method).toBe('POST');
       expect(q.url).toBe('/api/reply/inbox');
@@ -98,8 +108,8 @@ describe('inbox.mjs', () => {
       connect(server.url);
       const r = await run();
       expect(r.code).toBe(2);
-      expect(server.requests).toHaveLength(4);
-      const ids = server.requests.map((q) => q.body.waiterId);
+      expect(polls(server)).toHaveLength(4);
+      const ids = polls(server).map((q) => q.body.waiterId);
       expect(ids[0]).toMatch(UUID);
       expect(new Set(ids).size).toBe(1);
     } finally { await server.close(); }
@@ -145,7 +155,8 @@ describe('inbox.mjs', () => {
       const r = await run();
       expect(r.code).toBe(2);
       expect(r.stderr).toBe(WAKE + '복구됨');
-      expect(server.requests).toHaveLength(3);
+      expect(polls(server)).toHaveLength(3);
+      expect(acks(server)).toHaveLength(1);
     } finally { await server.close(); }
   });
 
@@ -198,5 +209,120 @@ describe('inbox.mjs', () => {
       if (pid > 0 && isAlive(pid)) { try { process.kill(pid); } catch { /* 이미 끝남 */ } }
       await server.close();
     }
+  });
+});
+
+/** inbox.mjs를 띄우고 stderr를 도착하는 대로 모은다(ack가 왔을 때 stderr가 이미 나왔는지 보려고). */
+function runLive(input = stopInput()) {
+  const child = spawn(process.execPath, [INBOX], { env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  const live = { stderr: '' };
+  const out = [];
+  const started = Date.now();
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (d) => { live.stderr += d; });
+  child.stdout.on('data', (d) => out.push(d));
+  child.stdin.on('error', () => {});
+  child.stdin.end(input);
+  live.done = new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, stderr: live.stderr, stdout: Buffer.concat(out), ms: Date.now() - started }));
+  });
+  return live;
+}
+
+describe('inbox.mjs — 글 전달 수신 확인(ack)', () => {
+  it('글을 stderr에 다 쓴 뒤 { sessionId, id }로 ack를 보내고 종료 코드 2로 끝난다', async () => {
+    const text = '빌드를 다시 해 주세요';
+    let live = null;
+    let stderrAtAck = null;
+    const server = await startServer((req) => {
+      if (req.url === ACK_URL) {
+        stderrAtAck = live.stderr;
+        return { status: 200, json: { ok: true } };
+      }
+      return { status: 200, json: { status: 'message', id: 'msg-42', text } };
+    });
+    try {
+      connect(server.url);
+      live = runLive();
+      const r = await live.done;
+      expect(r.code).toBe(2);
+      expect(r.stderr).toBe(WAKE + text);
+      expect(r.stdout.length).toBe(0);
+      expect(server.requests.map((q) => q.url)).toEqual([INBOX_URL, ACK_URL]);
+      const q = server.requests[1];
+      expect(q.method).toBe('POST');
+      expect(q.headers.authorization).toBe('Bearer tok-1');
+      expect(q.headers['content-type']).toBe('application/json');
+      expect(q.body).toEqual({ sessionId: 'sess-1', id: 'msg-42' });
+      // ack가 서버에 닿았을 때 이미 글 전체가 stderr로 나와 있었다.
+      expect(stderrAtAck).toBe(WAKE + text);
+    } finally { await server.close(); }
+  });
+
+  it('ack가 404·500·400·401이어도 종료 코드 2로 끝나고 다시 보내지 않는다', async () => {
+    for (const status of [404, 500, 400, 401]) {
+      const server = await inboxServer([{ status: 'message', id: 'm-1', text: '안녕' }], { status, json: { error: 'x' } });
+      try {
+        connect(server.url);
+        const r = await run();
+        expect(r.code).toBe(2);
+        expect(r.stderr).toBe(WAKE + '안녕');
+        expect(acks(server)).toHaveLength(1);
+        expect(polls(server)).toHaveLength(1);
+      } finally { await server.close(); }
+    }
+  });
+
+  it('ack 응답이 오지 않으면 3초 제한시간 뒤 종료 코드 2로 끝난다', async () => {
+    // inbox에는 글을 주고, ack에는 끝까지 답하지 않는 서버
+    const seen = [];
+    const server = createServer((req, res) => {
+      seen.push(req.url);
+      req.resume();
+      if (req.url === INBOX_URL) {
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ status: 'message', id: 'm-1', text: '느린 서버' }));
+        });
+      }
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      connect(`http://127.0.0.1:${server.address().port}`);
+      const r = await run();
+      expect(r.code).toBe(2);
+      expect(r.stderr).toBe(WAKE + '느린 서버');
+      expect(seen).toEqual([INBOX_URL, ACK_URL]);
+      expect(r.ms).toBeGreaterThanOrEqual(2900);
+      expect(r.ms).toBeLessThan(8000);
+    } finally {
+      server.closeAllConnections?.();
+      await new Promise((r) => server.close(r));
+    }
+  });
+
+  it('ack를 보낼 서버가 꺼져 있어도 종료 코드 2로 끝난다', async () => {
+    let server = null;
+    server = await startServer((req) => {
+      // 글을 준 직후 서버를 닫아 ack가 닿지 않게 한다.
+      if (req.url === INBOX_URL) setImmediate(() => server.close());
+      return { status: 200, json: { status: 'message', id: 'm-1', text: '닫히는 서버' } };
+    });
+    connect(server.url);
+    const r = await run();
+    expect(r.code).toBe(2);
+    expect(r.stderr).toBe(WAKE + '닫히는 서버');
+  });
+
+  it('글에 id가 없으면 ack를 보내지 않고 그대로 종료 코드 2로 끝난다', async () => {
+    const server = await inboxServer([{ status: 'message', text: 'id 없는 글' }]);
+    try {
+      connect(server.url);
+      const r = await run();
+      expect(r.code).toBe(2);
+      expect(r.stderr).toBe(WAKE + 'id 없는 글');
+      expect(acks(server)).toEqual([]);
+    } finally { await server.close(); }
   });
 });

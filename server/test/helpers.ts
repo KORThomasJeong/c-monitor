@@ -6,6 +6,7 @@ import postgres from 'postgres';
 import type { HookEvent, HookEventName, IngestBatch, StreamMessage, TranscriptLine } from '@c-monitor/shared';
 import { createApp } from '../src/app';
 import { migrate } from '../src/db/index';
+import { createTelegramHub } from '../src/notify/hub';
 import { createReplyHub } from '../src/reply/hub';
 import { createBus } from '../src/stream/bus';
 import type { Config, Deps, GoogleClient } from '../src/types';
@@ -77,7 +78,13 @@ export function makeHarness(db: TestDb, overrides: Partial<Deps> = {}, configOve
     googleClientSecret: 'secret',
     ...configOverrides,
   };
-  const deps: Deps = { sql: db.sql, config, bus, google, now: () => new Date(clock.now), reply: createReplyHub(), ...overrides };
+  const deps: Deps = {
+    sql: db.sql, config, bus, google, now: () => new Date(clock.now), reply: createReplyHub(),
+    // 텔레그램은 기본으로 꺼 둔다. 실제 네트워크로 나가지 않도록 클라이언트 만들기는 막아 둔다.
+    telegram: createTelegramHub(),
+    telegramClient: () => { throw new Error('테스트에서는 가짜 텔레그램 클라이언트를 넣어야 합니다'); },
+    ...overrides,
+  };
   const app = createApp(deps);
 
   async function req(method: string, path: string, opts: ReqOpts = {}): Promise<Response> {

@@ -83,11 +83,23 @@ export const LimitSnapshotSchema = z.object({
 });
 export type LimitSnapshot = z.infer<typeof LimitSnapshotSchema>;
 
+export const SessionStatSchema = z.object({
+  sessionId: z.string().min(1).max(200),
+  /** 컨텍스트 사용률 0~100(소수 1자리). 알 수 없으면 null */
+  contextPct: pct.nullable(),
+  /** 세션 누적 비용(USD). 알 수 없으면 null */
+  costUsd: z.number().min(0).nullable(),
+  at: iso,
+});
+export type SessionStat = z.infer<typeof SessionStatSchema>;
+
 export const IngestBatchSchema = z.object({
   machine: MachineInfoSchema,
   events: z.array(HookEventSchema).max(500),
   transcript: z.array(TranscriptChunkSchema).max(100),
   limits: LimitSnapshotSchema.optional(),
+  /** 상태줄이 보내는 세션별 컨텍스트·비용(0.3.0 이상). 모르는 세션·남의 세션 항목은 서버가 조용히 건너뛴다(400 금지). */
+  sessionStats: z.array(SessionStatSchema).max(100).optional(),
 });
 export type IngestBatch = z.infer<typeof IngestBatchSchema>;
 export type IngestResponse = { accepted: number };
@@ -143,6 +155,8 @@ export type SessionView = {
   queuedMessages: number;
   /** 공식 원격 제어 화면 주소(없으면 null) */
   remoteUrl: string | null;
+  /** 이 세션의 알림을 텔레그램으로 받는가(세션별 스위치, 기본 켬). 사용자의 항목별 설정과 함께 적용된다. */
+  telegram: boolean;
 };
 
 export type AccountView = {
@@ -323,3 +337,77 @@ export type PendingView = {
 
 /** PATCH /api/machines/:id */
 export const MachinePatchSchema = z.object({ remoteReply: z.boolean() });
+
+// ══ 알림(텔레그램) ════════════════════════════════════════
+// 공용 봇 하나. 사용자마다 설정 화면에서 연결 코드를 받아 봇에게 `/start <코드>`를 보내면 연결된다.
+// 봇 토큰은 관리자가 웹의 관리 › 알림에서 넣는다(DB에 암호화해 저장, 다시 보여 주지 않음). 토큰이 없으면 텔레그램 기능 전체가 꺼진다(available=false).
+//
+// GET    /api/notify                 → NotifyView
+// PUT    /api/notify/settings        NotifySettingsSchema → NotifyView
+// POST   /api/notify/telegram/link   → TelegramLinkResponse (코드 10분 유효, 새로 받으면 옛 코드는 무효)
+// DELETE /api/notify/telegram        → NotifyView (연결 끊기)
+// POST   /api/notify/telegram/test   → { ok: true } / 409 { error: 'not_linked' } (시험 메시지 보내기)
+
+export const NotifySettingsSchema = z.object({
+  /** 답을 기다림(승인·질문·알림) — 기본 켬 */
+  wait: z.boolean(),
+  /** 작업이 끝남(작업 중 → 끝남) — 기본 켬 */
+  done: z.boolean(),
+  /** 연락 끊김 — 기본 켬 */
+  lost: z.boolean(),
+  /** 5시간·주간 한도가 limitPct% 를 넘음 — 기본 켬 */
+  limit: z.boolean(),
+  limitPct: z.number().int().min(50).max(100),
+});
+export type NotifySettings = z.infer<typeof NotifySettingsSchema>;
+export const NOTIFY_DEFAULTS: NotifySettings = { wait: true, done: true, lost: true, limit: true, limitPct: 80 };
+
+export type NotifyView = {
+  telegram: {
+    /** 서버에 봇이 설정돼 있는가 */
+    available: boolean;
+    /** 봇 사용자 이름(@ 없이). available=false 면 null */
+    botUsername: string | null;
+    linked: boolean;
+    /** 연결된 텔레그램 계정 표시 이름(@아이디 또는 이름) */
+    linkedName: string | null;
+    linkedAt: string | null;
+  };
+  settings: NotifySettings;
+};
+export type TelegramLinkResponse = {
+  code: string;
+  /** https://t.me/<봇>?start=<코드> — 누르면 텔레그램이 열리고 "시작"을 누르면 연결된다 */
+  url: string;
+  expiresAt: string;
+};
+
+/** PATCH /api/sessions/:id — 세션별 설정(소유자만). → { session: SessionView } */
+export const SessionPatchSchema = z.object({ telegram: z.boolean() });
+
+// ── 관리자: 텔레그램 봇 ───────────────────────────────────
+// GET    /api/admin/telegram   → AdminTelegramView
+// PUT    /api/admin/telegram   AdminTelegramPutSchema → AdminTelegramView
+//        서버가 getMe 로 토큰을 확인한 뒤 저장하고 받기 루프를 새 토큰으로 다시 시작한다. 틀리면 400 { error: 'invalid_token' }.
+// DELETE /api/admin/telegram   → AdminTelegramView (봇 끄기 — 사용자 연결 정보는 남긴다)
+export const AdminTelegramPutSchema = z.object({ token: z.string().trim().regex(/^[0-9]{5,}:[A-Za-z0-9_-]{30,}$/) });
+export type AdminTelegramView = {
+  configured: boolean;
+  botUsername: string | null;
+  /** 토큰 끝 4글자(확인용). 전체 토큰은 절대 내려주지 않는다. */
+  tokenHint: string | null;
+  updatedAt: string | null;
+  /** 받기 루프 상태: ok / error(마지막 오류 한 줄) / off */
+  polling: 'ok' | 'error' | 'off';
+  lastError: string | null;
+  /** 텔레그램을 연결한 사용자 수 */
+  linkedUsers: number;
+};
+
+/**
+ * POST /api/reply/inbox/ack { sessionId, id } → { ok: true }, 모르는 id는 404.
+ * 0.3.0 이상 플러그인은 글을 세션에 넘긴 뒤 이것을 보낸다. 서버는 ack가 60초 안에 오지 않으면 그 글을 다시 준다
+ * (0.3.0 미만 기기는 ack를 보내지 않으므로 넘긴 순간 전달 완료로 본다).
+ */
+export const ReplyInboxAckSchema = z.object({ sessionId: z.string().min(1).max(200), id: z.string().min(1).max(200) });
+export type ReplyInboxAckResponse = { ok: true };

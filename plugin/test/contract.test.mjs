@@ -7,6 +7,8 @@ import {
   HOOK_EVENTS, IngestBatchSchema, MAX_BATCH_BYTES, MAX_LINE_BYTES, MESSAGE_MAX_CHARS, REPLY_MIN_PLUGIN,
   ReplyAnswerSchema, ReplyAskSchema, ReplyInboxSchema, ReplyWaitSchema,
 } from '../../shared/src/contract.ts';
+import * as contract from '../../shared/src/contract.ts';
+import { z } from 'zod';
 import * as queue from '../lib/queue.mjs';
 import { compareVersions } from '../lib/wrapper.mjs';
 import * as transcriptLib from '../lib/transcript.mjs';
@@ -18,6 +20,25 @@ beforeEach(() => {
   writeFileSync(join(sb.configDir, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'dev@example.com' } }));
 });
 afterEach(() => sb.cleanup());
+
+// ── 3차(0.3.0)에서 플러그인이 새로 보내는 모양 ─────────────────────────
+// shared 계약에 아직 없으면 아래 기대 모양으로 검사하고, 들어오면 shared 쪽 스키마로 검사한다.
+// (shared/src/contract.ts 에 넣을 정의와 같다.)
+const iso = z.string().datetime({ offset: true });
+const EXPECTED_SESSION_STAT = z.object({
+  sessionId: z.string().min(1).max(200),
+  /** 컨텍스트 사용률 0~100(소수 1자리). 상태줄 입력으로 알 수 없으면 null */
+  contextPct: z.number().min(0).max(100).nullable(),
+  /** 세션 누적 비용(USD). 알 수 없으면 null */
+  costUsd: z.number().min(0).nullable(),
+  at: iso,
+});
+const SessionStatSchema = contract.SessionStatSchema ?? EXPECTED_SESSION_STAT;
+const IngestWithStatsSchema = contract.IngestBatchSchema.shape.sessionStats
+  ? contract.IngestBatchSchema
+  : contract.IngestBatchSchema.extend({ sessionStats: z.array(SessionStatSchema).max(100).optional() });
+const ReplyInboxAckSchema = contract.ReplyInboxAckSchema
+  ?? z.object({ sessionId: z.string().min(1).max(200), id: z.string().min(1).max(200) });
 
 const connect = (server) => writeFileSync(join(sb.statusHome, 'config.json'), JSON.stringify({
   server, token: 'tok-1', machineId: 'm-1', machineName: '집 PC', pluginVersion: '0.1.0', originalStatusLine: null,
@@ -251,6 +272,64 @@ describe('공용 계약과 맞는지', () => {
         const parsed = IngestBatchSchema.safeParse(q.body);
         expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
       }
+    } finally { await server.close(); }
+  });
+
+  it('상태줄 래퍼의 세션 통계(sessionStats)가 기대 모양을 통과하고, 계약에 없는 필드는 보내지 않는다', async () => {
+    const server = await startServer();
+    try {
+      connect(server.url);
+      mkdirSync(join(sb.statusHome, 'bin'), { recursive: true });
+      const wrapper = join(sb.statusHome, 'bin', 'statusline.mjs');
+      copyFileSync(BIN('statusline.mjs'), wrapper);
+      const inputs = [
+        // 한도와 함께
+        {
+          session_id: 's-1', rate_limits: { five_hour: { used_percentage: 41.5, resets_at: 1794000000 } },
+          context_window: { used_percentage: 37.26, context_window_size: 200000 }, cost: { total_cost_usd: 1.2345 },
+        },
+        // 계산으로 구한 컨텍스트, 비용 없음
+        { session_id: 's-2', context_window: { context_window_size: 1000, current_usage: { input_tokens: 1, cache_read_input_tokens: 2 } } },
+        // 컨텍스트 없음, 비용만, 아주 긴 세션 id
+        { session_id: 'x'.repeat(500), cost: { total_cost_usd: 0 } },
+        // 범위를 벗어난 값
+        { session_id: 's-4', context_window: { used_percentage: 1e9 }, cost: { total_cost_usd: 1e6 } },
+      ];
+      for (const input of inputs) {
+        rmSync(join(sb.statusHome, 'state', 'limits.json'), { force: true });
+        await runNode(wrapper, [], { env: sb.env, input: JSON.stringify(input) });
+      }
+      expect(server.requests).toHaveLength(inputs.length);
+      for (const q of server.requests) {
+        const parsed = IngestWithStatsSchema.safeParse(q.body);
+        expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+        expect(q.body.sessionStats).toHaveLength(1);
+        for (const s of q.body.sessionStats) {
+          const one = SessionStatSchema.strict().safeParse(s);
+          expect(one.success, JSON.stringify(one.error?.issues)).toBe(true);
+          if (s.contextPct !== null) expect(Math.round(s.contextPct * 10) / 10).toBe(s.contextPct);
+        }
+      }
+      expect(server.requests[0].body.limits).toBeDefined();
+      expect(server.requests.map((q) => q.body.sessionStats[0].contextPct)).toEqual([37.3, 0.3, null, 100]);
+    } finally { await server.close(); }
+  });
+
+  it('글 수신 확인 본문이 기대 모양(ReplyInboxAckSchema)을 통과한다', async () => {
+    const server = await startServer((req) => (req.url === '/api/reply/inbox'
+      ? { status: 200, json: { status: 'message', id: 'msg-1', text: '안녕' } }
+      : { status: 200, json: { ok: true } }));
+    try {
+      connect(server.url);
+      const r = await runNode(BIN('inbox.mjs'), [], {
+        env: sb.env, input: JSON.stringify({ session_id: 'sess-1', cwd: 'C:\\work\\x', hook_event_name: 'Stop' }),
+      });
+      expect(r.code).toBe(2);
+      expect(server.requests.map((q) => q.url)).toEqual(['/api/reply/inbox', '/api/reply/inbox/ack']);
+      const ack = server.requests[1];
+      const parsed = ReplyInboxAckSchema.strict().safeParse(ack.body);
+      expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+      expect(ack.body).toEqual({ sessionId: 'sess-1', id: 'msg-1' });
     } finally { await server.close(); }
   });
 });

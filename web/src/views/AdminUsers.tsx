@@ -1,12 +1,13 @@
-// 관리자: 가입 승인 대기 목록과 사용자 목록(정지·다시 허용). role==='admin'만.
+// 관리자: 가입 승인 대기 목록과 사용자 목록(정지·다시 허용), 텔레그램 봇(알림). role==='admin'만.
 import type { MeResponse, UserView } from '@c-monitor/shared';
 import { useEffect, useState } from 'react';
 import * as api from '../api/client';
 import { Sec, SidePage } from '../components/SidePage';
 import { useTheme } from '../lib/prefs';
 import { Link } from '../router';
+import { AdminTelegram } from './AdminTelegram';
 
-const NAV: [string, string][] = [['pending', '승인 대기'], ['users', '사용자']];
+const NAV: [string, string][] = [['pending', '승인 대기'], ['users', '사용자'], ['notify', '알림']];
 
 const ROLE: Record<UserView['role'], [string, string]> = { admin: ['관리자', 'tag blue'], user: ['사용자', 'tag neutral'] };
 const STATE: Record<UserView['status'], [string, string]> = {
@@ -71,7 +72,7 @@ export function AdminUsers({ me }: { me: MeResponse }) {
       page="admin"
       tag="관리자"
       title="관리"
-      desc="가입 신청을 승인하고 사용자를 관리합니다. 관리자는 서비스 운영을 위해 모든 사용자의 대화를 볼 수 있습니다."
+      desc="가입 신청을 승인하고 사용자와 알림 봇을 관리합니다. 관리자는 서비스 운영을 위해 모든 사용자의 대화를 볼 수 있습니다."
       nav={NAV}
       menuLabel="관리 메뉴"
     >
@@ -135,6 +136,8 @@ export function AdminUsers({ me }: { me: MeResponse }) {
           </table>
         </div>
       </Sec>
+
+      <AdminTelegram />
     </SidePage>
   );
 }

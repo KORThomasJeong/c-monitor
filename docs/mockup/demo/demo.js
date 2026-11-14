@@ -18,6 +18,10 @@
  * 답하면 pending이 사라지고 작업 중으로 바뀌며 대화에 한 줄이 붙는다. 글을 보내면 잠시 뒤 답이 온다
  * (작업 중이면 쌓아 두었다가 작업이 끝날 때 전달). 설정의 "원격 답장" 스위치를 끄면 그 컴퓨터 세션에는 답할 수 없다.
  *
+ * 텔레그램 알림(3차): 서버에 봇(@c_monitor_demo_bot, 지어낸 이름)이 있고 처음엔 연결 안 됨이다. 설정 › 알림에서
+ * "텔레그램 연결"을 누르면 코드가 나오고 몇 초 뒤 연결됨으로 바뀐다(실제 텔레그램은 열지 않는다).
+ * 관리 › 알림에서 봇 토큰 바꾸기·끄기, 상세 패널에서 세션별 텔레그램 알림 켜기/끄기를 해 볼 수 있다(api-gateway는 꺼 둠).
+ *
  * 앱은 location.pathname으로 화면을 고르므로 여기서 history.replaceState로 주소를 view 값으로 바꾼다.
  * 그러면 상대 경로 자산이 엉뚱한 곳을 가리키게 되므로, 빌드 스크립트가 넣어 둔 자산 목록
  * (window.__CMON_DEMO_ASSETS__)을 원래 주소 기준 절대 주소로 바꿔 직접 불러온다.
@@ -137,10 +141,32 @@
 
   var settings = { lostMinutes: 10, endHours: 24, keepChatDays: 30, keepUsageDays: 90 };
 
+  // 텔레그램 알림. 봇 이름·토큰 끝자리는 지어낸 값이다.
+  var DEMO_BOT = 'c_monitor_demo_bot';
+  var adminTg = {
+    configured: true, botUsername: DEMO_BOT, tokenHint: 'De4o', updatedAt: ago(60 * 24 * 3),
+    polling: 'ok', lastError: null, linkedUsers: 2,
+  };
+  var notify = {
+    linked: false, linkedName: null, linkedAt: null,
+    settings: { wait: true, done: true, lost: true, limit: true, limitPct: 80 },
+  };
+  var linkTimer = null;
+  function notifyView() {
+    var on = adminTg.configured;
+    return {
+      telegram: {
+        available: on, botUsername: on ? adminTg.botUsername : null,
+        linked: notify.linked, linkedName: notify.linked ? notify.linkedName : null, linkedAt: notify.linked ? notify.linkedAt : null,
+      },
+      settings: clone(notify.settings),
+    };
+  }
+
   function S(o) {
     return Object.assign({
       account: ACC_A, branch: 'main', model: 'claude-sonnet-4-5', status: 'run', seen: true,
-      endedAt: null, activity: null, pending: null, canReply: false, queuedMessages: 0, remoteUrl: null,
+      endedAt: null, activity: null, pending: null, canReply: false, queuedMessages: 0, remoteUrl: null, telegram: true,
     }, o, { id: 'demo-' + o.name });
   }
   var sessions = [
@@ -169,7 +195,7 @@
       status: 'run', startedAt: ago(31), lastEventAt: ago(0.1),
       activity: { label: 'Edit', text: 'src/components/Hero.astro' } }),
     S({ name: 'api-gateway', machineId: 'm-build', cwd: '/srv/work/api-gateway', branch: 'refactor/auth-middleware', model: 'claude-opus-4-5',
-      status: 'run', startedAt: ago(128), lastEventAt: ago(0.3),
+      status: 'run', startedAt: ago(128), lastEventAt: ago(0.3), telegram: false,
       activity: { label: 'Bash', text: 'npm test -- --run auth' } }),
     S({ name: 'report-batch', machineId: 'm-build', cwd: '/srv/work/report-batch', branch: 'main',
       status: 'limit', seen: false, startedAt: ago(70), lastEventAt: ago(9),
@@ -700,6 +726,18 @@
     }
 
     // 종료·끊김 세션만 지운다(그 밖은 409). 지우면 대화도 함께 없애고 removed를 알린다.
+    // 세션별 텔레그램 알림 스위치(소유자만)
+    if ((m = /^\/api\/sessions\/([^/]+)$/.exec(p)) && method === 'PATCH') {
+      if ((g = guard('active'))) return g;
+      var ts = sessionById(decodeURIComponent(m[1]));
+      if (!ts) return notFound();
+      if (ts.sharedBy) return J(403, { error: 'forbidden' });
+      if (!body || typeof body.telegram !== 'boolean') return J(400, { error: 'invalid_body' });
+      ts.telegram = body.telegram;
+      publishSession(ts);
+      return J(200, { session: sessionView(ts) });
+    }
+
     if ((m = /^\/api\/sessions\/([^/]+)$/.exec(p)) && method === 'DELETE') {
       if ((g = guard('active'))) return g;
       var did = decodeURIComponent(m[1]);
@@ -733,6 +771,71 @@
         Object.assign(settings, b);
         if (endChanged) publish(Object.assign({ type: 'snapshot' }, snapshot(false)));
         return J(200, clone(settings));
+      }
+    }
+
+    // ── 알림(텔레그램) ──
+    if (p === '/api/notify' && method === 'GET') {
+      if ((g = guard('active'))) return g;
+      return J(200, notifyView());
+    }
+    if (p === '/api/notify/settings' && method === 'PUT') {
+      if ((g = guard('active'))) return g;
+      var ns = body || {};
+      var okBody = ['wait', 'done', 'lost', 'limit'].every(function (k) { return typeof ns[k] === 'boolean'; }) && isInt(ns.limitPct, 50, 100);
+      if (!okBody) return J(400, { error: 'invalid_body' });
+      notify.settings = { wait: ns.wait, done: ns.done, lost: ns.lost, limit: ns.limit, limitPct: ns.limitPct };
+      return J(200, notifyView());
+    }
+    if (p === '/api/notify/telegram/link' && method === 'POST') {
+      if ((g = guard('active'))) return g;
+      if (!adminTg.configured) return J(409, { error: 'telegram_unavailable' });
+      var abc = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+      var lc = '';
+      for (var i = 0; i < 8; i++) lc += abc.charAt(Math.floor(Math.random() * abc.length));
+      // 데모: 사람이 텔레그램에서 "시작"을 누른 셈 치고 몇 초 뒤 연결된다. 새로 받으면 옛 코드는 무효.
+      if (linkTimer) clearTimeout(linkTimer);
+      linkTimer = setTimeout(function () {
+        linkTimer = null;
+        if (!adminTg.configured) return;
+        if (!notify.linked) adminTg.linkedUsers += 1;
+        notify.linked = true;
+        notify.linkedName = '@demo_user';
+        notify.linkedAt = nowIso();
+      }, 7000);
+      return J(200, { code: lc, url: 'https://t.me/' + adminTg.botUsername + '?start=' + lc, expiresAt: iso(Date.now() + 10 * MIN) });
+    }
+    if (p === '/api/notify/telegram' && method === 'DELETE') {
+      if ((g = guard('active'))) return g;
+      if (linkTimer) { clearTimeout(linkTimer); linkTimer = null; }
+      if (notify.linked) adminTg.linkedUsers = Math.max(0, adminTg.linkedUsers - 1);
+      notify.linked = false;
+      notify.linkedName = null;
+      notify.linkedAt = null;
+      return J(200, notifyView());
+    }
+    if (p === '/api/notify/telegram/test' && method === 'POST') {
+      if ((g = guard('active'))) return g;
+      if (!adminTg.configured) return J(409, { error: 'telegram_unavailable' });
+      if (!notify.linked) return J(409, { error: 'not_linked' });
+      return J(200, { ok: true });
+    }
+
+    // ── 관리자: 텔레그램 봇 ──
+    if (p === '/api/admin/telegram') {
+      if ((g = guard('admin'))) return g;
+      if (method === 'GET') return J(200, clone(adminTg));
+      if (method === 'PUT') {
+        var tok = body && typeof body.token === 'string' ? body.token.trim() : '';
+        if (!/^[0-9]{5,}:[A-Za-z0-9_-]{30,}$/.test(tok)) return J(400, { error: 'invalid_token' });
+        // 데모: 숫자 부분이 0으로 시작하면 텔레그램이 거절한 셈 친다.
+        if (tok.charAt(0) === '0') return J(400, { error: 'invalid_token' });
+        Object.assign(adminTg, { configured: true, botUsername: DEMO_BOT, tokenHint: tok.slice(-4), updatedAt: nowIso(), polling: 'ok', lastError: null });
+        return J(200, clone(adminTg));
+      }
+      if (method === 'DELETE') {
+        Object.assign(adminTg, { configured: false, botUsername: null, tokenHint: null, updatedAt: nowIso(), polling: 'off', lastError: null });
+        return J(200, clone(adminTg));
       }
     }
 
@@ -922,6 +1025,27 @@
     // 승인 대기 사용자도 돌아갈 주소(예: 연결 링크)를 잃지 않는다.
     if (me().status === 'pending') go('/pending' + (safe ? '?next=' + encodeURIComponent(safe) : ''));
     else go(safe || '/');
+  }, true);
+
+  // 텔레그램 연결 링크(https://t.me/<데모 봇>?start=…)는 실제로 열지 않는다. 봇 이름이 지어낸 값이라서다.
+  // 앱은 누른 순간 빈 탭을 열고 나중에 주소를 넣으므로, 빈 탭 열기도 가짜 탭으로 바꾼다. BotFather 안내 링크는 그대로 둔다.
+  function isDemoBotLink(href) {
+    try {
+      var u = new URL(href, location.href);
+      return u.hostname === 't.me' && u.pathname.toLowerCase() !== '/botfather';
+    } catch (e) { return false; }
+  }
+  var realOpen = window.open ? window.open.bind(window) : null;
+  window.open = function (url) {
+    if (!url || url === 'about:blank' || isDemoBotLink(url)) {
+      return { closed: false, opener: null, location: { href: '' }, close: function () { this.closed = true; }, focus: function () {} };
+    }
+    return realOpen ? realOpen.apply(window, arguments) : null;
+  };
+  document.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    if (!a || !isDemoBotLink(a.getAttribute('href'))) return;
+    e.preventDefault();
   }, true);
 
   // ── 주소 바꾸기와 앱 불러오기 ──────────────────────────

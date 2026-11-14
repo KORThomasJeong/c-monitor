@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import type { MeResponse, UserView } from '@c-monitor/shared';
+import { notifySignup } from '../notify/notify';
 import type { Deps, Env, Q, User } from '../types';
 import { fail } from '../util';
 import { requireUser, userGuard } from './guard';
@@ -13,8 +14,10 @@ import {
 type UserRow = { id: string; email: string; name: string | null; role: User['role']; status: User['status']; created_at: Date };
 export type AdminUserView = UserView & { createdAt: string };
 
-/** 구글 로그인에 성공한 이메일로 사용자를 찾거나 만든다. */
-export async function upsertUser(sql: Q, adminEmails: string[], emailRaw: string, name: string | null): Promise<User> {
+/** 구글 로그인에 성공한 이메일로 사용자를 찾거나 만든다. created는 이번에 새로 만들었는가. */
+export async function upsertUser(
+  sql: Q, adminEmails: string[], emailRaw: string, name: string | null,
+): Promise<{ user: User; created: boolean }> {
   const email = emailRaw.trim().toLowerCase();
   const isAdmin = adminEmails.includes(email);
   const [created] = await sql<UserRow[]>`
@@ -22,7 +25,7 @@ export async function upsertUser(sql: Q, adminEmails: string[], emailRaw: string
     VALUES (${randomUUID()}, ${email}, ${name}, ${isAdmin ? 'admin' : 'user'}, ${isAdmin ? 'active' : 'pending'})
     ON CONFLICT (email) DO NOTHING
     RETURNING id, email, name, role, status, created_at`;
-  if (created) return toUser(created);
+  if (created) return { user: toUser(created), created: true };
   // 이미 있는 사용자: 나중에 ADMIN_EMAILS에 추가된 경우 관리자로 올린다.
   const [row] = isAdmin
     ? await sql<UserRow[]>`
@@ -31,7 +34,7 @@ export async function upsertUser(sql: Q, adminEmails: string[], emailRaw: string
     : await sql<UserRow[]>`
         UPDATE users SET name = COALESCE(${name}, name)
         WHERE email = ${email} RETURNING id, email, name, role, status, created_at`;
-  return toUser(row!);
+  return { user: toUser(row!), created: false };
 }
 
 export function authRoutes(deps: Deps): Hono<Env> {
@@ -59,7 +62,9 @@ export function authRoutes(deps: Deps): Hono<Env> {
       console.error('[auth] 구글 로그인 실패:', err instanceof Error ? err.message : err);
       return c.redirect('/?login_error=failed', 302);
     }
-    const user = await upsertUser(sql, config.adminEmails, profile.email, profile.name);
+    const { user, created } = await upsertUser(sql, config.adminEmails, profile.email, profile.name);
+    // 새 가입 신청이면 관리자에게 텔레그램으로 알린다(비동기).
+    if (created && user.status === 'pending') notifySignup(deps, user);
     setSessionCookie(c, config, await createWebSession(sql, user.id, deps.now()));
     return c.redirect(safeNext(saved.next), 302);
   });

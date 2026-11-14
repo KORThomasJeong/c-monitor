@@ -1,4 +1,4 @@
-import type { LogLine, LogResponse, MeResponse, StreamMessage } from '@c-monitor/shared';
+import { NOTIFY_DEFAULTS, type LogLine, type LogResponse, type MeResponse, type NotifyView, type StreamMessage } from '@c-monitor/shared';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,6 +14,8 @@ vi.mock('../api/client', async (orig) => ({
   getLog: vi.fn(),
   searchLog: vi.fn(),
   deleteSession: vi.fn(async () => ({ ok: true })),
+  getNotify: vi.fn(),
+  patchSession: vi.fn(),
 }));
 
 const me: MeResponse = { user: { id: 'u1', email: 'admin@example.com', name: null, role: 'admin', status: 'active' } };
@@ -72,6 +74,11 @@ function longLog(total = 250, patch: (l: LogLine) => LogLine = (l) => l) {
   };
 }
 
+const notifyOf = (tg: Partial<NotifyView['telegram']> = {}): NotifyView => ({
+  telegram: { available: true, botUsername: 'c_monitor_test_bot', linked: true, linkedName: '@hong', linkedAt: null, ...tg },
+  settings: NOTIFY_DEFAULTS,
+});
+
 beforeEach(() => {
   localStorage.clear();
   window.history.replaceState(null, '', '/');
@@ -80,6 +87,8 @@ beforeEach(() => {
   vi.mocked(api.getLog).mockReset().mockResolvedValue(page([], 0));
   vi.mocked(api.searchLog).mockReset().mockResolvedValue({ hits: [], total: 0 });
   vi.mocked(api.deleteSession).mockReset().mockResolvedValue({ ok: true });
+  vi.mocked(api.getNotify).mockReset().mockResolvedValue(notifyOf());
+  vi.mocked(api.patchSession).mockReset().mockResolvedValue(undefined);
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -474,5 +483,81 @@ describe('테마', () => {
     await user.click(screen.getByRole('button', { name: '테마 바꾸기' }));
     expect(app.classList.contains('dark')).toBe(!wasDark);
     expect(localStorage.getItem('cs-theme')).toBe(wasDark ? 'light' : 'dark');
+  });
+});
+
+describe('세션별 텔레그램 알림', () => {
+  it('상세 머리의 스위치로 바로 끄고, 카드에 "알림 끔" 표시가 붙는다', async () => {
+    const { user } = setup();
+    await user.click(card(/^c-monitor · /));
+    const p = panel();
+    const sw = await within(p).findByRole('switch', { name: '텔레그램 알림' });
+    expect(sw).toBeChecked();
+    expect(screen.queryByTestId('tg-off')).not.toBeInTheDocument();
+    await user.click(sw);
+    expect(api.patchSession).toHaveBeenCalledWith('run1', { telegram: false });
+    expect(sw).not.toBeChecked();
+    const c = card(/^c-monitor · /);
+    expect(c).toHaveAccessibleName('c-monitor · 작업 중 · 텔레그램 알림 끔');
+    expect(within(c).getByTestId('tg-off')).toHaveAttribute('title', '텔레그램 알림 끔');
+  });
+
+  it('저장이 실패하면 되돌리고 알린다', async () => {
+    vi.mocked(api.patchSession).mockRejectedValueOnce(new api.ApiError(500, {}));
+    const { user } = setup();
+    await user.click(card(/^c-monitor · /));
+    const sw = await within(panel()).findByRole('switch', { name: '텔레그램 알림' });
+    await user.click(sw);
+    await waitFor(() => expect(sw).toBeChecked());
+    expect(await screen.findByText('텔레그램 알림을 바꾸지 못했습니다. 잠시 뒤 다시 시도해 주세요.')).toBeInTheDocument();
+    expect(screen.queryByTestId('tg-off')).not.toBeInTheDocument();
+  });
+
+  it('서버가 돌려준 세션으로 맞춘다(켜기)', async () => {
+    const s = snapshot();
+    s.sessions[0] = { ...s.sessions[0]!, telegram: false };
+    vi.mocked(api.patchSession).mockImplementation(async (id, b) => ({ session: { ...s.sessions[0]!, id, telegram: b.telegram } }));
+    const { user } = setup(s);
+    expect(within(card(/^c-monitor · /)).getByTestId('tg-off')).toBeInTheDocument();
+    await user.click(card(/^c-monitor · /));
+    const sw = await within(panel()).findByRole('switch', { name: '텔레그램 알림' });
+    expect(sw).not.toBeChecked();
+    await user.click(sw);
+    expect(api.patchSession).toHaveBeenCalledWith('run1', { telegram: true });
+    await waitFor(() => expect(screen.queryByTestId('tg-off')).not.toBeInTheDocument());
+  });
+
+  it('텔레그램을 연결하지 않았으면 스위치를 막고 설정으로 안내한다', async () => {
+    vi.mocked(api.getNotify).mockResolvedValue(notifyOf({ linked: false, linkedName: null }));
+    const { user } = setup();
+    await user.click(card(/^c-monitor · /));
+    const sw = await within(panel()).findByRole('switch', { name: '텔레그램 알림' });
+    expect(sw).toBeDisabled();
+    expect(sw).toHaveAccessibleDescription(/텔레그램을 연결하면 켤 수 있습니다/);
+    expect(within(panel()).getByRole('link', { name: '설정 › 알림' })).toHaveAttribute('href', '/settings#notify');
+  });
+
+  it('공유받은 세션에는 스위치도 "알림 끔" 표시도 없다', async () => {
+    const s = snapshot();
+    s.sessions[0] = { ...s.sessions[0]!, sharedBy: 'owner@example.com', telegram: false };
+    const { user } = setup(s);
+    // 공유받은 세션에는 "알림 끔" 표시도 없다(내 설정이 아니다).
+    expect(within(card(/^c-monitor · /)).queryByTestId('tg-off')).not.toBeInTheDocument();
+    await user.click(card(/^c-monitor · /));
+    await waitFor(() => expect(api.getNotify).toHaveBeenCalled());
+    expect(within(panel()).queryByRole('switch', { name: '텔레그램 알림' })).not.toBeInTheDocument();
+
+    // 내 세션에는 있다.
+    await user.click(card(/^search-api · /));
+    expect(await within(panel()).findByRole('switch', { name: '텔레그램 알림' })).toBeInTheDocument();
+  });
+
+  it('서버에 봇이 없으면 스위치를 그리지 않는다', async () => {
+    vi.mocked(api.getNotify).mockResolvedValue(notifyOf({ available: false, botUsername: null, linked: false }));
+    const { user } = setup();
+    await user.click(card(/^c-monitor · /));
+    await waitFor(() => expect(api.getNotify).toHaveBeenCalled());
+    await act(async () => {});
+    expect(within(panel()).queryByRole('switch', { name: '텔레그램 알림' })).not.toBeInTheDocument();
   });
 });

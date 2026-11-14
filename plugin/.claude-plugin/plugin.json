@@ -1,6 +1,6 @@
 {
   "name": "c-monitor",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "클로드코드 세션 현황을 c-monitor 서버로 보내고, 웹 대시보드에서 승인·질문·글로 답할 수 있게 합니다",
   "author": {
     "name": "KORThomasJeong"

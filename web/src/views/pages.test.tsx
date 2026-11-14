@@ -31,6 +31,14 @@ vi.mock('../api/client', async (orig) => {
     approveUser: vi.fn(async () => undefined),
     suspendUser: vi.fn(async () => undefined),
     logout: vi.fn(async () => undefined),
+    // 알림 절은 Notify.test.tsx에서 따로 본다. 여기서는 봇 없는 서버로 둔다.
+    getNotify: vi.fn(async () => ({
+      telegram: { available: false, botUsername: null, linked: false, linkedName: null, linkedAt: null },
+      settings: { wait: true, done: true, lost: true, limit: true, limitPct: 80 },
+    })),
+    getAdminTelegram: vi.fn(async () => ({
+      configured: false, botUsername: null, tokenHint: null, updatedAt: null, polling: 'off', lastError: null, linkedUsers: 0,
+    })),
   };
 });
 

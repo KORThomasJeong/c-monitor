@@ -1,4 +1,4 @@
-// 설정: 내 컴퓨터, 클로드 계정(별칭·숨기기), 표시 기준, 보관 기간.
+// 설정: 내 컴퓨터, 클로드 계정(별칭·숨기기), 알림(텔레그램), 표시 기준, 보관 기간.
 import { REPLY_MIN_PLUGIN, type AccountView, type MachineView, type MeResponse, type SettingsView } from '@c-monitor/shared';
 import { useEffect, useState } from 'react';
 import * as api from '../api/client';
@@ -7,9 +7,10 @@ import { Sec, SidePage } from '../components/SidePage';
 import { formatAgo } from '../lib/format';
 import { pluginSupportsReply } from '../lib/reply';
 import { navigate } from '../router';
+import { NotifySection } from './Notify';
 
 const NAV: [string, string][] = [
-  ['machines', '컴퓨터'], ['accounts', '클로드 계정'], ['rules', '표시 기준'], ['retention', '보관 기간'],
+  ['machines', '컴퓨터'], ['accounts', '클로드 계정'], ['notify', '알림'], ['rules', '표시 기준'], ['retention', '보관 기간'],
 ];
 
 type NumKey = keyof SettingsView;
@@ -156,7 +157,7 @@ export function Settings({ me }: { me: MeResponse }) {
       me={me}
       page="settings"
       title="설정"
-      desc="연결한 컴퓨터와 클로드 계정, 카드 표시 기준과 보관 기간을 정합니다."
+      desc="연결한 컴퓨터와 클로드 계정, 텔레그램 알림, 카드 표시 기준과 보관 기간을 정합니다."
       nav={NAV}
       menuLabel="설정 메뉴"
       actions={
@@ -248,6 +249,8 @@ export function Settings({ me }: { me: MeResponse }) {
           </table>
         </div>
       </Sec>
+
+      <NotifySection isAdmin={me.user.role === 'admin'} />
 
       <Sec id="rules" title="표시 기준" desc="카드 색이 바뀌는 시간을 정합니다." body>
         <div className="form-grid">{FIELDS.slice(0, 2).map(numField)}</div>
