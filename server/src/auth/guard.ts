@@ -22,8 +22,11 @@ export function userGuard(deps: Deps, level: 'any' | 'active' | 'admin' = 'activ
   };
 }
 
-/** 기기 토큰(Authorization: Bearer)을 확인해 컨텍스트에 넣는다. 없거나 폐기됐으면 401. */
-export function machineGuard(deps: Deps): MiddlewareHandler<Env> {
+/**
+ * 기기 토큰(Authorization: Bearer)을 확인해 컨텍스트에 넣는다. 없거나 폐기됐으면 401.
+ * 사용자가 active가 아니면 403 — allowInactiveUser를 켜면 통과시킨다(연결 해제처럼 권한을 줄이기만 하는 요청용).
+ */
+export function machineGuard(deps: Deps, opts: { allowInactiveUser?: boolean } = {}): MiddlewareHandler<Env> {
   return async (c, next) => {
     const m = /^Bearer\s+(\S+)$/i.exec(c.req.header('authorization') ?? '');
     if (!m) throw fail(401, 'unauthorized');
@@ -35,7 +38,7 @@ export function machineGuard(deps: Deps): MiddlewareHandler<Env> {
       FROM machines m JOIN users u ON u.id = m.user_id
       WHERE m.token_hash = ${sha256Hex(m[1]!)}`;
     if (!row || row.revoked_at) throw fail(401, 'unauthorized');
-    if (row.user_status !== 'active') throw fail(403, row.user_status);
+    if (row.user_status !== 'active' && !opts.allowInactiveUser) throw fail(403, row.user_status);
     c.set('machine', {
       id: row.id, userId: row.user_id, name: row.name, os: row.os,
       pluginVersion: row.plugin_version, lastSeenAt: row.last_seen_at,

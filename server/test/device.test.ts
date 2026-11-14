@@ -112,3 +112,87 @@ describe('기기 연결', () => {
     expect((await h.ingest(token, h.batch([]))).status).toBe(403);
   });
 });
+
+describe('터미널에서 연결 해제 (POST /api/device/disconnect)', () => {
+  it('기기 토큰으로 자기 기기를 폐기하고, 웹에서 폐기할 때와 같은 스냅샷을 낸다', async () => {
+    const u = await h.activeUser('disc-dev@example.com');
+    const { token, machineId } = await h.connect(u.cookie, 'pc-disc');
+    const before = h.published.length;
+
+    const res = await h.req('POST', '/api/device/disconnect', { token });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+
+    const [m] = await db.sql<{ revoked_at: Date | null }[]>`SELECT revoked_at FROM machines WHERE id = ${machineId}`;
+    expect(m!.revoked_at).not.toBeNull();
+    const msgs = h.published.slice(before).filter((p) => p.userId === u.id);
+    expect(msgs.map((p) => p.msg.type)).toEqual(['snapshot']);
+    const snap = msgs[0]!.msg as { machines: { id: string }[] };
+    expect(snap.machines.some((x) => x.id === machineId)).toBe(false);
+
+    // 폐기된 뒤에는 수집도, 다시 해제도 401
+    expect((await h.ingest(token, h.batch([]))).status).toBe(401);
+    expect((await h.req('POST', '/api/device/disconnect', { token })).status).toBe(401);
+  });
+
+  it('토큰이 없거나 틀리면 401', async () => {
+    expect((await h.req('POST', '/api/device/disconnect')).status).toBe(401);
+    expect((await h.req('POST', '/api/device/disconnect', { token: 'bogus-token' })).status).toBe(401);
+  });
+
+  it('정지된 사용자의 기기도 연결 해제는 할 수 있다', async () => {
+    const u = await h.activeUser('disc-susp-dev@example.com');
+    const { token } = await h.connect(u.cookie, 'pc-disc-susp');
+    await db.sql`UPDATE users SET status = 'suspended' WHERE id = ${u.id}`;
+    expect((await h.req('POST', '/api/device/disconnect', { token })).status).toBe(200);
+    expect((await h.req('POST', '/api/device/disconnect', { token })).status).toBe(401);
+  });
+});
+
+describe('연결 요청 거부 (POST /api/device/deny)', () => {
+  it('거부하면 poll이 410을 주고, 그 코드는 더 이상 조회·승인되지 않는다', async () => {
+    const admin = await h.login(ADMIN);
+    const s = await start('pc-deny');
+    const res = await h.req('POST', '/api/device/deny', {
+      cookie: admin, body: { userCode: s.userCode.replace('-', '').toLowerCase() },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+
+    expect((await h.req('POST', '/api/device/poll', { body: { deviceCode: s.deviceCode } })).status).toBe(410);
+    expect((await h.req('GET', `/api/device/lookup?code=${s.userCode}`, { cookie: admin })).status).toBe(404);
+    expect((await h.req('POST', '/api/device/approve', { cookie: admin, body: { userCode: s.userCode } })).status).toBe(404);
+    expect((await h.req('POST', '/api/device/deny', { cookie: admin, body: { userCode: s.userCode } })).status).toBe(404);
+    expect((await db.sql`SELECT 1 FROM machines WHERE name = 'pc-deny'`).length).toBe(0);
+  });
+
+  it('로그인한 active 사용자만 거부할 수 있다', async () => {
+    const s = await start();
+    expect((await h.req('POST', '/api/device/deny', { body: { userCode: s.userCode } })).status).toBe(401);
+    const pending = await h.login('pending-deny-dev@example.com');
+    expect((await h.req('POST', '/api/device/deny', { cookie: pending, body: { userCode: s.userCode } })).status).toBe(403);
+    expect((await h.req('POST', '/api/device/poll', { body: { deviceCode: s.deviceCode } })).status).toBe(202);
+  });
+
+  it('이미 승인됐거나 없는 코드·만료된 코드는 404, 잘못된 본문은 400', async () => {
+    const admin = await h.login(ADMIN);
+    const s = await start('pc-approved');
+    expect((await h.req('POST', '/api/device/approve', { cookie: admin, body: { userCode: s.userCode } })).status).toBe(200);
+    expect((await h.req('POST', '/api/device/deny', { cookie: admin, body: { userCode: s.userCode } })).status).toBe(404);
+    // 승인은 그대로 살아 있다
+    expect((await h.req('POST', '/api/device/poll', { body: { deviceCode: s.deviceCode } })).status).toBe(200);
+
+    expect((await h.req('POST', '/api/device/deny', { cookie: admin, body: { userCode: 'ZZZZ-ZZZZ' } })).status).toBe(404);
+    expect((await h.req('POST', '/api/device/deny', { cookie: admin, body: { userCode: '!!' } })).status).toBe(404);
+    expect((await h.req('POST', '/api/device/deny', { cookie: admin, body: {} })).status).toBe(400);
+  });
+});
+
+describe('연결 요청 거부 — 만료', () => {
+  it('만료된 코드는 거부할 수 없다(404)', async () => {
+    const admin = await h.login(ADMIN);
+    const s = await start('pc-late');
+    h.advance(11 * MIN);
+    expect((await h.req('POST', '/api/device/deny', { cookie: admin, body: { userCode: s.userCode } })).status).toBe(404);
+  });
+});

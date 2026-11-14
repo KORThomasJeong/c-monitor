@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS device_requests (
   approved_user_id  text REFERENCES users(id) ON DELETE CASCADE,
   machine_id        text
 );
+-- 웹에서 연결 요청을 거부한 시각(나중에 추가된 열 — 이미 있는 테이블에도 안전하게 붙는다).
+ALTER TABLE device_requests ADD COLUMN IF NOT EXISTS denied_at timestamptz;
 
 -- 클로드 계정(대시보드 로그인 계정과 별개).
 CREATE TABLE IF NOT EXISTS accounts (

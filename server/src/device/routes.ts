@@ -1,12 +1,14 @@
-// 기기 연결: start(플러그인) → approve(웹, 로그인 필요) → poll(플러그인이 토큰 수령).
+// 기기 연결: start(플러그인) → approve 또는 deny(웹, 로그인 필요) → poll(플러그인이 토큰 수령).
+// 연결 해제: disconnect(플러그인이 자기 토큰으로 자기 기기를 폐기).
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { DevicePollResponse, DeviceStartResponse } from '@c-monitor/shared';
-import { requireUser, userGuard } from '../auth/guard';
+import { machineGuard, requireMachine, requireUser, userGuard } from '../auth/guard';
 import { loadMachineViews } from '../query/views';
 import type { Deps, Env } from '../types';
 import { fail, readBody } from '../util';
+import { revokeMachine } from './revoke';
 import { hashToken, newToken, newUserCode, normalizeUserCode } from './token';
 
 const EXPIRES_SECONDS = 600;
@@ -28,6 +30,9 @@ type PollResult =
 export function deviceRoutes(deps: Deps): Hono<Env> {
   const { sql, config } = deps;
   const app = new Hono<Env>();
+  /** 아직 답(승인·거부)을 기다리는 요청만 고르는 조건. */
+  const open = (now: Date) =>
+    sql`approved_user_id IS NULL AND machine_id IS NULL AND denied_at IS NULL AND expires_at > ${now}`;
 
   app.post('/api/device/start', async (c) => {
     const body = await readBody(c, StartSchema);
@@ -60,11 +65,11 @@ export function deviceRoutes(deps: Deps): Hono<Env> {
     const result: PollResult = await sql.begin(async (tx): Promise<PollResult> => {
       const [r] = await tx<{
         machine_name: string; os: string; plugin_version: string;
-        expires_at: Date; approved_user_id: string | null; machine_id: string | null;
+        expires_at: Date; approved_user_id: string | null; machine_id: string | null; denied_at: Date | null;
       }[]>`
-        SELECT machine_name, os, plugin_version, expires_at, approved_user_id, machine_id
+        SELECT machine_name, os, plugin_version, expires_at, approved_user_id, machine_id, denied_at
         FROM device_requests WHERE device_code = ${hashToken(deviceCode)} FOR UPDATE`;
-      if (!r || r.machine_id || r.expires_at <= now) return { kind: 'gone' };
+      if (!r || r.machine_id || r.denied_at || r.expires_at <= now) return { kind: 'gone' };
       if (!r.approved_user_id) return { kind: 'pending' };
       // 승인됨: 이때 토큰을 만들어 한 번만 돌려준다. DB에는 해시만 남는다.
       const token = newToken();
@@ -90,7 +95,7 @@ export function deviceRoutes(deps: Deps): Hono<Env> {
     if (!code) throw fail(404, 'not_found');
     const [r] = await sql<{ machine_name: string; os: string }[]>`
       SELECT machine_name, os FROM device_requests
-      WHERE user_code = ${code} AND approved_user_id IS NULL AND machine_id IS NULL AND expires_at > ${deps.now()}`;
+      WHERE user_code = ${code} AND ${open(deps.now())}`;
     if (!r) throw fail(404, 'not_found');
     return c.json({ userCode: code, machineName: r.machine_name, os: r.os });
   });
@@ -101,10 +106,31 @@ export function deviceRoutes(deps: Deps): Hono<Env> {
     if (!code) throw fail(404, 'not_found');
     const [r] = await sql<{ machine_name: string }[]>`
       UPDATE device_requests SET approved_user_id = ${requireUser(c).id}
-      WHERE user_code = ${code} AND approved_user_id IS NULL AND machine_id IS NULL AND expires_at > ${deps.now()}
+      WHERE user_code = ${code} AND ${open(deps.now())}
       RETURNING machine_name`;
     if (!r) throw fail(404, 'not_found');
     return c.json({ ok: true, machineName: r.machine_name });
+  });
+
+  // 확인 화면의 "거부". 이후 poll은 410을 받아 터미널이 바로 끝난다.
+  app.post('/api/device/deny', userGuard(deps, 'active'), async (c) => {
+    const body = await readBody(c, ApproveSchema);
+    const code = normalizeUserCode(body.userCode);
+    if (!code) throw fail(404, 'not_found');
+    const now = deps.now();
+    const rows = await sql`
+      UPDATE device_requests SET denied_at = ${now}
+      WHERE user_code = ${code} AND ${open(now)}
+      RETURNING user_code`;
+    if (rows.length === 0) throw fail(404, 'not_found');
+    return c.json({ ok: true });
+  });
+
+  // 터미널의 --disconnect. 정지된 사용자의 기기도 스스로 연결을 끊을 수는 있다.
+  app.post('/api/device/disconnect', machineGuard(deps, { allowInactiveUser: true }), async (c) => {
+    const machine = requireMachine(c);
+    if (!(await revokeMachine(deps, machine.userId, machine.id))) throw fail(401, 'unauthorized');
+    return c.json({ ok: true });
   });
 
   return app;

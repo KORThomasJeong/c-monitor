@@ -1,14 +1,41 @@
-// 조회 API: 대시보드 목록, 대화 로그, 봤음 표시, 계정 별칭, 기기 폐기, 설정.
+// 조회 API: 대시보드 목록, 대화 로그(페이지 단위)·검색, 봤음 표시, 세션 삭제, 계정 별칭, 기기 폐기, 설정.
 import { Hono } from 'hono';
 import { z } from 'zod';
-import type { LogResponse, SettingsView } from '@c-monitor/shared';
+import {
+  DELETABLE_STATUSES, LOG_PAGE_MAX, LOG_PAGE_SIZE, SEARCH_LIMIT, SEARCH_MIN_CHARS,
+  type SessionStatus, type SettingsView,
+} from '@c-monitor/shared';
 import { requireUser, userGuard } from '../auth/guard';
+import { revokeMachine } from '../device/revoke';
 import type { Deps, Env, User } from '../types';
 import { fail, readBody } from '../util';
-import { loadAccountViews, loadLog, loadSessionViews, loadSettings, loadSnapshot } from './views';
+import { searchLog } from './search';
+import { loadAccountViews, loadLogPage, loadSessionViews, loadSettings, loadSnapshot, type LogCursor } from './views';
 
-const LOG_LIMIT_DEFAULT = 5000;
-const LOG_LIMIT_MAX = 20000;
+/** 검색 결과 최대 개수와 검색어 최대 길이(글자 수). */
+const SEARCH_LIMIT_MAX = 200;
+const SEARCH_MAX_CHARS = 200;
+/** seq는 DB에서 integer다. 이 범위를 벗어난 값은 받지 않는다. */
+const SEQ_MAX = 2_147_483_647;
+
+/** ?limit= 을 읽는다. 없으면 기본값, 숫자가 아니거나 1~max를 벗어나면 400. */
+function readLimit(raw: string | undefined, fallback: number, max: number): number {
+  if (raw === undefined) return fallback;
+  const n = /^\d{1,9}$/.test(raw) ? Number(raw) : NaN;
+  if (!(n >= 1 && n <= max)) throw fail(400, 'invalid_limit');
+  return n;
+}
+
+/** ?before= / ?after= / ?around= 중 하나를 읽는다. 둘 이상이거나 정수가 아니면 400. */
+function readCursor(query: Record<string, string>): LogCursor {
+  const given = (['before', 'after', 'around'] as const).filter((k) => query[k] !== undefined);
+  if (given.length === 0) return null;
+  const key = given[0]!;
+  const raw = query[key]!;
+  const n = /^-?\d{1,10}$/.test(raw) ? Number(raw) : NaN;
+  if (given.length > 1 || !(Math.abs(n) <= SEQ_MAX)) throw fail(400, 'invalid_cursor');
+  return key === 'before' ? { before: n } : key === 'after' ? { after: n } : { around: n };
+}
 
 const AccountPatchSchema = z.object({
   alias: z.string().trim().max(60).nullable().optional(),
@@ -46,13 +73,19 @@ export function queryRoutes(deps: Deps): Hono<Env> {
   app.get('/api/sessions/:id/log', active, async (c) => {
     const id = c.req.param('id');
     await ownerOf(id, requireUser(c), true);
-    const afterRaw = c.req.query('after');
-    const after = afterRaw === undefined ? -1 : Number(afterRaw);
-    if (!Number.isInteger(after)) throw fail(400, 'invalid_after');
-    const limitRaw = Number(c.req.query('limit') ?? LOG_LIMIT_DEFAULT);
-    const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, LOG_LIMIT_MAX) : LOG_LIMIT_DEFAULT;
-    const res: LogResponse = { lines: await loadLog(sql, id, after, limit) };
-    return c.json(res);
+    const cursor = readCursor(c.req.query());
+    const limit = readLimit(c.req.query('limit'), LOG_PAGE_SIZE, LOG_PAGE_MAX);
+    return c.json(await loadLogPage(sql, id, cursor, limit));
+  });
+
+  app.get('/api/sessions/:id/search', active, async (c) => {
+    const id = c.req.param('id');
+    await ownerOf(id, requireUser(c), true);
+    const q = (c.req.query('q') ?? '').trim();
+    const chars = Array.from(q).length;
+    if (chars < SEARCH_MIN_CHARS || chars > SEARCH_MAX_CHARS) throw fail(400, 'invalid_query');
+    const limit = readLimit(c.req.query('limit'), SEARCH_LIMIT, SEARCH_LIMIT_MAX);
+    return c.json(await searchLog(sql, id, q, limit));
   });
 
   app.post('/api/sessions/:id/seen', active, async (c) => {
@@ -63,6 +96,26 @@ export function queryRoutes(deps: Deps): Hono<Env> {
     const [view] = await loadSessionViews(sql, [id]);
     if (changed.length > 0 && view) deps.bus.publish(user.id, { type: 'session', session: view.session });
     return c.json({ session: view!.session });
+  });
+
+  // 종료·연락 끊김 세션을 소유자가 지운다. 남의 것은 관리자라도 없는 것처럼 404.
+  app.delete('/api/sessions/:id', active, async (c) => {
+    const id = c.req.param('id');
+    const user = requireUser(c);
+    const result = await sql.begin(async (tx): Promise<'not_found' | 'active' | 'deleted'> => {
+      const [row] = await tx<{ user_id: string; status: SessionStatus }[]>`
+        SELECT user_id, status FROM sessions WHERE id = ${id} FOR UPDATE`;
+      if (!row || row.user_id !== user.id) return 'not_found';
+      if (!DELETABLE_STATUSES.includes(row.status)) return 'active';
+      await tx`DELETE FROM shares WHERE session_id = ${id}`;
+      await tx`DELETE FROM transcript_lines WHERE session_id = ${id}`;
+      await tx`DELETE FROM sessions WHERE id = ${id}`;
+      return 'deleted';
+    });
+    if (result === 'not_found') throw fail(404, 'not_found');
+    if (result === 'active') throw fail(409, 'session_active');
+    deps.bus.publish(user.id, { type: 'removed', sessionIds: [id] });
+    return c.json({ ok: true });
   });
 
   app.patch('/api/accounts/:email', active, async (c) => {
@@ -82,14 +135,7 @@ export function queryRoutes(deps: Deps): Hono<Env> {
   });
 
   app.delete('/api/machines/:id', active, async (c) => {
-    const user = requireUser(c);
-    const now = deps.now();
-    const rows = await sql`
-      UPDATE machines SET revoked_at = ${now}
-      WHERE id = ${c.req.param('id')} AND user_id = ${user.id} AND revoked_at IS NULL RETURNING id`;
-    if (rows.length === 0) throw fail(404, 'not_found');
-    // 목록에서 빠지는 변화는 스냅샷을 통째로 다시 보내 알린다.
-    deps.bus.publish(user.id, { type: 'snapshot', ...(await loadSnapshot(sql, user.id, now)) });
+    if (!(await revokeMachine(deps, requireUser(c).id, c.req.param('id')))) throw fail(404, 'not_found');
     return c.json({ ok: true });
   });
 

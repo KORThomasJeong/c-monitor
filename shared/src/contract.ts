@@ -146,7 +146,45 @@ export type AccountView = {
 
 export type LogLine = TranscriptLine & { seq: number };
 export type DashboardSnapshot = { sessions: SessionView[]; machines: MachineView[]; accounts: AccountView[] };
-export type LogResponse = { lines: LogLine[] };
+
+// ── 대화 조회(페이지 단위) ────────────────────────────────
+// GET /api/sessions/:id/log
+//   (쿼리 없음)        가장 최근 limit줄
+//   ?before=<seq>      seq보다 앞선 줄 중 가장 가까운 limit줄 (이전 대화 더 보기)
+//   ?after=<seq>       seq보다 뒤 줄을 앞에서부터 limit줄 (재연결 뒤 빠진 줄 채우기)
+//   ?around=<seq>      seq가 가운데 오도록 앞뒤로 합쳐 limit줄 (검색 결과로 이동)
+//   ?limit=<n>         기본 LOG_PAGE_SIZE, 최대 LOG_PAGE_MAX
+// before·after·around는 한 번에 하나만. 응답의 lines는 항상 seq 오름차순.
+export const LOG_PAGE_SIZE = 100;
+export const LOG_PAGE_MAX = 500;
+export type LogResponse = {
+  lines: LogLine[];
+  /** 이 세션에 저장된 전체 줄 수 */
+  total: number;
+  /** lines의 첫 줄보다 앞선 줄이 더 있다 */
+  hasMoreBefore: boolean;
+  /** lines의 마지막 줄보다 뒤 줄이 더 있다 */
+  hasMoreAfter: boolean;
+};
+
+// ── 대화 검색 ─────────────────────────────────────────────
+// GET /api/sessions/:id/search?q=<글자>&limit=<n>
+// 대소문자를 가리지 않고 본문(text)과 도구 이름에서 찾는다. 최신 줄부터.
+export const SEARCH_MIN_CHARS = 2;
+export const SEARCH_LIMIT = 50;
+export type LogSearchHit = {
+  seq: number;
+  role: TranscriptLine['role'];
+  at: string;
+  toolName?: string;
+  /** 찾은 글자 주변을 잘라 낸 한 줄(최대 160자, 줄바꿈은 공백으로) */
+  snippet: string;
+};
+export type LogSearchResponse = {
+  hits: LogSearchHit[];
+  /** 찾은 전체 개수(hits보다 많을 수 있다) */
+  total: number;
+};
 
 export type SettingsView = { lostMinutes: number; endHours: number; keepChatDays: number; keepUsageDays: number };
 
@@ -156,4 +194,12 @@ export type StreamMessage =
   | { type: 'session'; session: SessionView }
   | { type: 'log'; sessionId: string; lines: LogLine[] }
   | { type: 'limits'; account: AccountView }
-  | { type: 'machine'; machine: MachineView };
+  | { type: 'machine'; machine: MachineView }
+  /** 세션이 지워졌다(사용자가 삭제). 화면에서 카드와 불러 둔 대화를 없앤다. */
+  | { type: 'removed'; sessionIds: string[] };
+
+// ── 세션 삭제 ─────────────────────────────────────────────
+// DELETE /api/sessions/:id → { ok: true }
+// 소유자만. 종료(end)·연락 끊김(lost) 세션만 지울 수 있고, 그 밖의 상태면 409 { error: 'session_active' }.
+// 세션과 그 대화 줄을 모두 지우고 'removed' 메시지를 낸다.
+export const DELETABLE_STATUSES: readonly SessionStatus[] = ['end', 'lost'];

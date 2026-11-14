@@ -1,7 +1,5 @@
 // DB 행 → 계약의 뷰 타입. 조회 API·스트림·수집이 함께 쓴다.
-import type {
-  AccountView, DashboardSnapshot, LogLine, MachineView, SessionStatus, SessionView, SettingsView,
-} from '@c-monitor/shared';
+import type { AccountView, DashboardSnapshot, LogLine, LogResponse, MachineView, SessionStatus, SessionView, SettingsView } from '@c-monitor/shared';
 import type { Q } from '../types';
 
 export const ONLINE_MS = 10 * 60_000;
@@ -165,10 +163,65 @@ export function toLogLine(r: LineRow): LogLine {
   return line;
 }
 
-export async function loadLog(sql: Q, sessionId: string, after: number, limit: number): Promise<LogLine[]> {
-  const rows = await sql<LineRow[]>`
-    SELECT seq, role, at, text, tool_name, tool_input, truncated, masked FROM transcript_lines
-    WHERE session_id = ${sessionId} AND seq > ${after}
-    ORDER BY seq LIMIT ${limit}`;
-  return rows.map(toLogLine);
+const LINE_COLUMNS = ['seq', 'role', 'at', 'text', 'tool_name', 'tool_input', 'truncated', 'masked'] as const;
+
+/** 어디를 볼지. null이면 가장 최근 줄. */
+export type LogCursor = { before: number } | { after: number } | { around: number } | null;
+
+/**
+ * 대화를 페이지 단위로 읽는다. lines는 항상 seq 오름차순.
+ * - null: 가장 최근 limit줄
+ * - before: 그 seq보다 앞선 줄 중 가장 가까운 limit줄
+ * - after: 그 seq보다 뒤 줄을 앞에서부터 limit줄
+ * - around: 그 seq가 가운데 오도록 앞뒤 합쳐 limit줄(한쪽이 모자라면 다른 쪽으로 채운다)
+ */
+export async function loadLogPage(sql: Q, sessionId: string, cursor: LogCursor, limit: number): Promise<LogResponse> {
+  const newestBefore = (seq: number | null, n: number) => sql<LineRow[]>`
+    SELECT ${sql(LINE_COLUMNS)} FROM transcript_lines
+    WHERE session_id = ${sessionId} ${seq === null ? sql`` : sql`AND seq < ${seq}`}
+    ORDER BY seq DESC LIMIT ${n}`;
+  const oldestFrom = (seq: number, inclusive: boolean, n: number) => sql<LineRow[]>`
+    SELECT ${sql(LINE_COLUMNS)} FROM transcript_lines
+    WHERE session_id = ${sessionId} AND ${inclusive ? sql`seq >= ${seq}` : sql`seq > ${seq}`}
+    ORDER BY seq LIMIT ${n}`;
+
+  let rows: LineRow[];
+  // 돌려준 줄이 없을 때 "앞·뒤에 더 있는지"를 가르는 경계: lo보다 작으면 앞, hi보다 크면 뒤.
+  let lo = 0;
+  let hi = -1;
+  if (cursor === null) {
+    rows = [...(await newestBefore(null, limit))].reverse();
+  } else if ('before' in cursor) {
+    rows = [...(await newestBefore(cursor.before, limit))].reverse();
+    lo = cursor.before;
+    hi = cursor.before - 1;
+  } else if ('after' in cursor) {
+    rows = [...(await oldestFrom(cursor.after, false, limit))];
+    lo = cursor.after + 1;
+    hi = cursor.after;
+  } else {
+    const [older, newer] = await Promise.all([newestBefore(cursor.around, limit), oldestFrom(cursor.around, true, limit)]);
+    // 앞쪽은 절반만, 뒤쪽이 모자라면 그만큼 앞쪽을 더 쓴다.
+    const takeOlder = Math.min(older.length, Math.max(Math.floor(limit / 2), limit - newer.length));
+    const takeNewer = Math.min(newer.length, limit - takeOlder);
+    rows = [...older.slice(0, takeOlder).reverse(), ...newer.slice(0, takeNewer)];
+    lo = cursor.around;
+    hi = cursor.around - 1;
+  }
+  if (rows.length > 0) {
+    lo = rows[0]!.seq;
+    hi = rows[rows.length - 1]!.seq;
+  }
+
+  const [count] = await sql<{ total: number; before: number; after: number }[]>`
+    SELECT count(*)::int AS total,
+           (count(*) FILTER (WHERE seq < ${lo}))::int AS before,
+           (count(*) FILTER (WHERE seq > ${hi}))::int AS after
+    FROM transcript_lines WHERE session_id = ${sessionId}`;
+  return {
+    lines: rows.map(toLogLine),
+    total: count?.total ?? 0,
+    hasMoreBefore: (count?.before ?? 0) > 0,
+    hasMoreAfter: (count?.after ?? 0) > 0,
+  };
 }

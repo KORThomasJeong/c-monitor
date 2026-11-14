@@ -109,6 +109,9 @@ export async function applyBatch(deps: Deps, machine: Machine, batch: IngestBatc
       for (const r of rows) fresh.add(r.id);
     }
     const events = batch.events.filter((e) => fresh.delete(e.id));
+    // 이미 받은 이벤트가 섞여 있는 세션 = 예전에 받은 묶음을 다시 보낸 것.
+    const accepted = new Set(events);
+    const resent = new Set(batch.events.filter((e) => !accepted.has(e)).map((e) => sid(e.sessionId)));
 
     // 이 묶음이 건드리는 세션들의 현재 상태.
     const touched = [...new Set([...events.map((e) => sid(e.sessionId)), ...batch.transcript.map((t) => sid(t.sessionId))])];
@@ -125,9 +128,15 @@ export async function applyBatch(deps: Deps, machine: Machine, batch: IngestBatc
       dirty.add(id);
     }
     // 이벤트 없이 대화만 먼저 온 세션은 최소한의 행을 만들어 둔다.
+    // 다만 다시 보낸 묶음인데 세션이 없다면 사용자가 그 세션을 지운 것이다 — 대화만으로 되살리지 않는다.
+    const dropped = new Set<string>();
     for (const t of batch.transcript) {
       const id = sid(t.sessionId);
       if (states.has(id)) continue;
+      if (resent.has(id)) {
+        dropped.add(id);
+        continue;
+      }
       const first = t.lines[0] ? new Date(Math.min(new Date(t.lines[0].at).getTime(), now.getTime())) : now;
       states.set(id, {
         status: 'done', seen: true, account: null, cwd: '', branch: null, model: null,
@@ -167,6 +176,7 @@ export async function applyBatch(deps: Deps, machine: Machine, batch: IngestBatc
     // 대화 줄: (session_id, seq) 중복은 무시하고 새로 들어간 것만 돌려받는다.
     const lineRows: LineInsert[] = [];
     for (const t of batch.transcript) {
+      if (dropped.has(sid(t.sessionId))) continue;
       t.lines.forEach((l, i) => {
         lineRows.push({
           session_id: sid(t.sessionId), seq: t.seq + i, role: l.role, at: l.at, text: l.text,
