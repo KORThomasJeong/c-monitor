@@ -1,8 +1,10 @@
 // 서버 API 호출. 쿠키 로그인 기준이며 401·403(pending)은 알맞은 화면으로 보낸다.
 import {
   API,
+  SEARCH_LIMIT,
   type DashboardSnapshot,
   type LogResponse,
+  type LogSearchResponse,
   type MeResponse,
   type SettingsView,
   type UserView,
@@ -23,11 +25,20 @@ function isPendingBody(body: unknown): boolean {
   return b.error === 'pending' || b.code === 'pending' || b.status === 'pending';
 }
 
+/** 지금 주소를 돌아갈 곳(?next=)으로 붙인다. 대시보드·로그인·대기 화면이면 붙이지 않는다. */
+export function nextQuery(here = window.location.pathname + window.location.search): string {
+  if (here === '/' || here.startsWith('/login') || here.startsWith('/pending')) return '';
+  return `?next=${encodeURIComponent(here)}`;
+}
+
 function toLogin() {
-  const here = window.location.pathname + window.location.search;
   if (window.location.pathname === '/login') return;
-  const next = here === '/' ? '' : `?next=${encodeURIComponent(here)}`;
-  navigate(`/login${next}`, { replace: true });
+  navigate(`/login${nextQuery()}`, { replace: true });
+}
+
+function toPending() {
+  if (window.location.pathname === '/pending') return;
+  navigate(`/pending${nextQuery()}`, { replace: true });
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -44,7 +55,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
   if (!res.ok) {
     if (res.status === 401) toLogin();
-    else if (res.status === 403 && isPendingBody(data)) navigate('/pending', { replace: true });
+    else if (res.status === 403 && isPendingBody(data)) toPending();
     throw new ApiError(res.status, data);
   }
   return data as T;
@@ -56,14 +67,33 @@ const sessionPath = (id: string) => `${API.sessions}/${enc(id)}`;
 export const getMe = () => request<MeResponse>('GET', API.me);
 export const getDashboard = () => request<DashboardSnapshot>('GET', API.sessions);
 
-export const getLog = (sessionId: string, after?: number) =>
-  request<LogResponse>('GET', `${sessionPath(sessionId)}/log${after != null ? `?after=${after}` : ''}`);
+/** 대화 한 쪽(기본 100줄). 기준을 주지 않으면 가장 최근 줄들. */
+export type LogCursor = { before: number } | { after: number } | { around: number };
+
+export function getLog(sessionId: string, cursor?: LogCursor) {
+  const q = cursor ? `?${Object.entries(cursor).map(([k, v]) => `${k}=${v}`).join('&')}` : '';
+  return request<LogResponse>('GET', `${sessionPath(sessionId)}/log${q}`);
+}
+
+/** 세션 전체 대화에서 찾는다(최신 줄부터). */
+export const searchLog = (sessionId: string, q: string, limit = SEARCH_LIMIT) =>
+  request<LogSearchResponse>('GET', `${sessionPath(sessionId)}/search?q=${enc(q)}&limit=${limit}`);
+
+/** 종료·연락 끊김 세션과 그 대화 기록을 지운다. */
+export const deleteSession = (sessionId: string) => request<{ ok: true }>('DELETE', sessionPath(sessionId));
 
 export const markSeen = (sessionId: string) => request<void>('POST', `${sessionPath(sessionId)}/seen`);
 
 /** 응답 본문은 계약에 없다. 서버가 machineName을 주면 성공 화면에 쓴다. */
 export const approveDevice = (userCode: string) =>
   request<{ machineName?: string } | undefined>('POST', API.deviceApprove, { userCode });
+
+/** 연결 확인 화면에 보일 컴퓨터 정보. 없거나 만료·이미 처리된 코드면 404. */
+export const lookupDevice = (userCode: string) =>
+  request<{ userCode: string; machineName: string; os: string }>('GET', `/api/device/lookup?code=${enc(userCode)}`);
+
+/** 연결 요청을 거부한다. 404면 이미 처리된 요청. */
+export const denyDevice = (userCode: string) => request<{ ok: true }>('POST', '/api/device/deny', { userCode });
 
 export const getSettings = () => request<SettingsView>('GET', API.settings);
 export const putSettings = (s: SettingsView) => request<SettingsView | undefined>('PUT', API.settings, s);

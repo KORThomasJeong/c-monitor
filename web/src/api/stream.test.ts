@@ -46,6 +46,13 @@ describe('connectStream', () => {
     expect(messages).toEqual([{ type: 'snapshot', sessions: [], machines: [], accounts: [] }]);
   });
 
+  it('세션 삭제(removed) 메시지도 넘긴다', () => {
+    const { messages } = setup();
+    latest().open();
+    latest().send(JSON.stringify({ type: 'removed', sessionIds: ['a', 'b'] }));
+    expect(messages).toEqual([{ type: 'removed', sessionIds: ['a', 'b'] }]);
+  });
+
   it('브라우저가 스스로 다시 붙는 중이면 새로 만들지 않는다', () => {
     const { status } = setup();
     latest().open();

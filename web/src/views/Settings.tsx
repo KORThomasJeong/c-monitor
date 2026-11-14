@@ -12,12 +12,15 @@ const NAV: [string, string][] = [
 ];
 
 type NumKey = keyof SettingsView;
-const FIELDS: { key: NumKey; id: string; label: string; unit: string; max: number }[] = [
-  { key: 'lostMinutes', id: 'lost-min', label: '연락 끊김으로 표시', unit: '분 동안 소식이 없을 때', max: 1440 },
-  { key: 'endHours', id: 'end-hour', label: '종료 카드 유지', unit: '시간 뒤 기록 탭으로', max: 720 },
-  { key: 'keepChatDays', id: 'keep-chat', label: '대화 기록', unit: '일', max: 3650 },
-  { key: 'keepUsageDays', id: 'keep-usage', label: '사용량 기록', unit: '일', max: 3650 },
+// 범위는 서버 검증(server/src/query/routes.ts SettingsSchema)과 같게 둔다.
+const FIELDS: { key: NumKey; id: string; label: string; unit: string; min: number; max: number }[] = [
+  { key: 'lostMinutes', id: 'lost-min', label: '연락 끊김으로 표시', unit: '분 동안 소식이 없을 때', min: 1, max: 1440 },
+  { key: 'endHours', id: 'end-hour', label: '종료 카드 유지', unit: '시간 뒤 목록에서 숨깁니다', min: 0, max: 8760 },
+  { key: 'keepChatDays', id: 'keep-chat', label: '대화 기록', unit: '일', min: 1, max: 3650 },
+  { key: 'keepUsageDays', id: 'keep-usage', label: '사용량 기록', unit: '일', min: 1, max: 3650 },
 ];
+/** 별칭 최대 길이(서버 AccountPatchSchema와 같음). */
+const ALIAS_MAX = 60;
 type Draft = Record<NumKey, string>;
 const toDraft = (s: SettingsView): Draft => ({
   lostMinutes: String(s.lostMinutes), endHours: String(s.endHours),
@@ -78,8 +81,8 @@ export function Settings({ me }: { me: MeResponse }) {
     const next = {} as SettingsView;
     for (const f of FIELDS) {
       const n = Number(draft[f.key]);
-      if (!Number.isInteger(n) || n < 1 || n > f.max) {
-        setStatus({ ok: false, text: `${f.label}에는 1부터 ${f.max}까지의 정수를 넣어 주세요.` });
+      if (draft[f.key].trim() === '' || !Number.isInteger(n) || n < f.min || n > f.max) {
+        setStatus({ ok: false, text: `${f.label}에는 ${f.min}부터 ${f.max}까지의 정수를 넣어 주세요.` });
         return;
       }
       next[f.key] = n;
@@ -122,7 +125,7 @@ export function Settings({ me }: { me: MeResponse }) {
           className="input num"
           type="number"
           inputMode="numeric"
-          min={1}
+          min={f.min}
           max={f.max}
           value={draft?.[f.key] ?? ''}
           disabled={!draft}
@@ -190,7 +193,7 @@ export function Settings({ me }: { me: MeResponse }) {
                       className="input alias-input"
                       aria-label={`${a.email} 별칭`}
                       value={alias[a.email] ?? ''}
-                      maxLength={40}
+                      maxLength={ALIAS_MAX}
                       placeholder="예: 회사"
                       onChange={(e) => setAlias((m) => ({ ...m, [a.email]: e.target.value }))}
                     />

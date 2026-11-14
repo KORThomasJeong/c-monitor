@@ -9,12 +9,13 @@ type Props = {
   styleOf: (email: string | null) => AccountStyle;
   now: number;
   onOpen: (id: string) => void;
+  onDelete?: (id: string) => void;
 };
 
-export function Deck({ sessions, machines, styleOf, now, onOpen }: Props) {
+export function Deck({ sessions, machines, styleOf, now, onOpen, onDelete }: Props) {
   const nameOf = new Map(machines.map((m) => [m.id, m.name]));
   return (
-    <main className="deck" aria-label="세션 간단히 보기">
+    <main className={sessions.length > 8 ? "deck many" : "deck"} aria-label="세션 간단히 보기">
       {sessions.length === 0 && <p className="empty deck-empty">표시할 세션이 없습니다.</p>}
       {sortSessions(sessions).map((s) => (
         <SessionTile
@@ -24,6 +25,7 @@ export function Deck({ sessions, machines, styleOf, now, onOpen }: Props) {
           machineName={nameOf.get(s.machineId) ?? '알 수 없는 컴퓨터'}
           now={now}
           onOpen={onOpen}
+          onDelete={onDelete}
         />
       ))}
     </main>

@@ -1,8 +1,11 @@
 // 세션·계정을 화면 표시용으로 바꾸는 순수 함수들.
 import {
+  DELETABLE_STATUSES,
+  SEARCH_MIN_CHARS,
   STATUS_LABEL,
   STATUS_RANK,
   type AccountView,
+  type LogLine,
   type MachineView,
   type SessionStatus,
   type SessionView,
@@ -136,7 +139,39 @@ export function firstLine(text: string, max = 200): string {
   return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
-export const isPcOs = (os: string) => /windows|mac|darwin/i.test(os);
+/** Windows·macOS면 PC 아이콘. 플러그인이 예전에 보낸 process.platform 값(win32·darwin)도 받는다. */
+export const isPcOs = (os: string) => /^win|windows|^mac|macos|mac os|darwin/i.test(os.trim());
+
+/** 화면에서 지울 수 있는 상태(종료·연락 끊김). 서버도 같은 기준으로 409를 준다. */
+export const canDelete = (s: SessionStatus) => DELETABLE_STATUSES.includes(s);
+
+/** 대화 줄 본문을 찾은 글자 기준으로 조각낸다. 2자 미만이면 나누지 않는다. */
+export function splitMatches(text: string, query: string): { text: string; hit: boolean }[] {
+  const q = query.trim();
+  if (Array.from(q).length < SEARCH_MIN_CHARS || !text) return [{ text, hit: false }];
+  const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+  const out: { text: string; hit: boolean }[] = [];
+  let at = 0;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    if (m.index > at) out.push({ text: text.slice(at, m.index), hit: false });
+    out.push({ text: m[0], hit: true });
+    at = m.index + m[0].length;
+  }
+  if (at < text.length) out.push({ text: text.slice(at), hit: false });
+  return out.length ? out : [{ text, hit: false }];
+}
+
+/**
+ * 도구 줄 표시. 본문(text)이 이미 입력 요약이거나 결과이므로 본문을 쓰고, 본문이 없을 때만 입력을 요약한다.
+ * head는 한 줄 요약, rest는 여러 줄일 때 펼쳐 볼 전체(한 줄이면 빈 문자열).
+ */
+export function toolText(line: LogLine): { head: string; rest: string } {
+  const body = (line.text ?? '').replace(/^\s*\n/, '').replace(/\n\s*$/, '');
+  if (!body.trim()) return { head: toolSummary(line.toolInput), rest: '' };
+  const lines = body.split(/\r?\n/);
+  const head = (lines.find((l) => l.trim()) ?? '').trim();
+  return { head, rest: lines.length > 1 ? body : '' };
+}
 
 /** 컴퓨터별 묶음. 컴퓨터 목록 순서를 따르고, 목록에 없는 컴퓨터의 세션은 맨 뒤 묶음으로. */
 export function groupByMachine(

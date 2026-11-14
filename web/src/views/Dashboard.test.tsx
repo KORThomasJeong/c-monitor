@@ -1,5 +1,5 @@
-import type { MeResponse, StreamMessage } from '@c-monitor/shared';
-import { act, render, screen, within } from '@testing-library/react';
+import type { LogLine, LogResponse, MeResponse, StreamMessage } from '@c-monitor/shared';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as api from '../api/client';
@@ -11,7 +11,9 @@ vi.mock('../api/stream', () => ({ connectStream: vi.fn() }));
 vi.mock('../api/client', async (orig) => ({
   ...(await orig<typeof import('../api/client')>()),
   markSeen: vi.fn(async () => undefined),
-  getLog: vi.fn(async () => ({ lines: [] })),
+  getLog: vi.fn(),
+  searchLog: vi.fn(),
+  deleteSession: vi.fn(async () => ({ ok: true })),
 }));
 
 const me: MeResponse = { user: { id: 'u1', email: 'admin@example.com', name: null, role: 'admin', status: 'active' } };
@@ -19,7 +21,8 @@ let handlers: StreamHandlers;
 
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
 
-const snapshot = (over: Partial<Extract<StreamMessage, { type: 'snapshot' }>> = {}): StreamMessage => ({
+type Snapshot = Extract<StreamMessage, { type: 'snapshot' }>;
+const snapshot = (over: Partial<Snapshot> = {}): Snapshot => ({
   type: 'snapshot',
   machines: [mkMachine({ id: 'm1', name: '집 PC', os: 'Windows 11' }), mkMachine({ id: 'm2', name: 'server-b' })],
   accounts: [mkAccount({ email: 'dev@company-a.example' })],
@@ -44,13 +47,39 @@ function setup(msg: StreamMessage = snapshot()) {
   return { user, ...view };
 }
 const card = (name: RegExp) => screen.getByRole('button', { name });
+const cardNames = (el: HTMLElement) =>
+  [...el.querySelectorAll('button.card')].map((b) => b.getAttribute('aria-label')?.split(' · ')[0]);
+const panel = () => screen.getByRole('complementary', { name: '세션 상세' });
+
+const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => mkLine(from + i));
+/** 서버 응답 모양. 앞뒤 더 있는지는 seq로 셈한다. */
+function page(lines: LogLine[], total: number): LogResponse {
+  return {
+    lines, total,
+    hasMoreBefore: lines.length > 0 && lines[0]!.seq > 0,
+    hasMoreAfter: lines.length > 0 && lines[lines.length - 1]!.seq < total - 1,
+  };
+}
+/** total줄짜리 세션을 흉내 내는 getLog. */
+function longLog(total = 250, patch: (l: LogLine) => LogLine = (l) => l) {
+  const all = range(0, total - 1).map(patch);
+  return async (_id: string, c?: api.LogCursor): Promise<LogResponse> => {
+    if (!c) return page(all.slice(-100), total);
+    if ('before' in c) return page(all.filter((l) => l.seq < c.before).slice(-100), total);
+    if ('after' in c) return page(all.filter((l) => l.seq > c.after).slice(0, 100), total);
+    const from = Math.max(0, Math.min(total - 100, c.around - 50));
+    return page(all.slice(from, from + 100), total);
+  };
+}
 
 beforeEach(() => {
   localStorage.clear();
   window.history.replaceState(null, '', '/');
   vi.mocked(connectStream).mockImplementation((h) => { handlers = h; return () => {}; });
   vi.mocked(api.markSeen).mockClear();
-  vi.mocked(api.getLog).mockClear().mockResolvedValue({ lines: [] });
+  vi.mocked(api.getLog).mockReset().mockResolvedValue(page([], 0));
+  vi.mocked(api.searchLog).mockReset().mockResolvedValue({ hits: [], total: 0 });
+  vi.mocked(api.deleteSession).mockReset().mockResolvedValue({ ok: true });
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -63,7 +92,7 @@ describe('대시보드 상세', () => {
     expect(card(/^search-api · /)).not.toHaveClass('unseen');
     expect(card(/^search-api · /)).toHaveClass('sel');
     expect(api.markSeen).toHaveBeenCalledWith('wait1');
-    expect(api.getLog).toHaveBeenCalledWith('wait1', undefined);
+    expect(api.getLog).toHaveBeenCalledWith('wait1');
   });
 
   it('done 카드는 눌러도 unack가 유지되고 markSeen을 부르지 않는다', async () => {
@@ -83,12 +112,8 @@ describe('대시보드 상세', () => {
 
   it('컴퓨터별로 묶고 묶음 안은 STATUS_RANK 순서', () => {
     setup();
-    const home = screen.getByRole('region', { name: '집 PC' });
-    const names = within(home).getAllByRole('button').map((b) => b.getAttribute('aria-label')?.split(' · ')[0]);
-    expect(names).toEqual(['search-api', 'notes-sync', 'c-monitor']);
-    const ora = screen.getByRole('region', { name: 'server-b' });
-    expect(within(ora).getAllByRole('button').map((b) => b.getAttribute('aria-label')?.split(' · ')[0]))
-      .toEqual(['blog-site', 'homepage']);
+    expect(cardNames(screen.getByRole('region', { name: '집 PC' }))).toEqual(['search-api', 'notes-sync', 'c-monitor']);
+    expect(cardNames(screen.getByRole('region', { name: 'server-b' }))).toEqual(['blog-site', 'homepage']);
   });
 
   it('상태 필터로 거른다', async () => {
@@ -145,35 +170,253 @@ describe('한도 카드', () => {
 
 describe('상세 패널', () => {
   it('대화를 불러와 줄마다 그리고, 가림·생략 표시와 wait 안내를 보인다', async () => {
-    vi.mocked(api.getLog).mockResolvedValue({
-      lines: [
-        mkLine(0, { role: 'user', text: '푸시해 줘' }),
-        mkLine(1, { role: 'assistant', text: '푸시하겠습니다', truncated: true }),
-        mkLine(2, { role: 'tool', text: '', toolName: 'Bash', toolInput: { command: 'cat .env' }, masked: 2 }),
-      ],
-    });
+    vi.mocked(api.getLog).mockResolvedValue(page([
+      mkLine(0, { role: 'user', text: '푸시해 줘' }),
+      mkLine(1, { role: 'assistant', text: '푸시하겠습니다', truncated: true }),
+      mkLine(2, { role: 'tool', text: '', toolName: 'Bash', toolInput: { command: 'cat .env' }, masked: 2 }),
+    ], 3));
     const { user } = setup();
     await user.click(card(/^search-api · /));
-    const panel = screen.getByRole('complementary', { name: '세션 상세' });
-    expect(await within(panel).findByText('푸시해 줘')).toBeInTheDocument();
-    expect(within(panel).getByText('푸시하겠습니다')).toBeInTheDocument();
-    expect(within(panel).getByText('일부 생략')).toBeInTheDocument();
-    expect(within(panel).getByText('Bash')).toBeInTheDocument();
-    expect(within(panel).getByText('cat .env')).toBeInTheDocument();
-    expect(within(panel).getByText('키 2개 가려짐')).toBeInTheDocument();
-    expect(within(panel).getByText(/해당 컴퓨터의 터미널에서 답해 주세요/)).toBeInTheDocument();
-    expect(within(panel).getByText('git push origin main')).toBeInTheDocument();
+    const p = panel();
+    expect(await within(p).findByText('푸시해 줘')).toBeInTheDocument();
+    expect(within(p).getByText('푸시하겠습니다')).toBeInTheDocument();
+    expect(within(p).getByText('일부 생략')).toBeInTheDocument();
+    expect(within(p).getByText('Bash')).toBeInTheDocument();
+    expect(within(p).getByText('cat .env')).toBeInTheDocument();
+    expect(within(p).getByText('키 2개 가려짐')).toBeInTheDocument();
+    expect(within(p).getByText(/해당 컴퓨터의 터미널에서 답해 주세요/)).toBeInTheDocument();
+    expect(within(p).getByText('git push origin main')).toBeInTheDocument();
     // 원격 답장은 이번 범위가 아니다.
-    expect(within(panel).queryByRole('textbox')).not.toBeInTheDocument();
+    expect(within(p).queryByRole('textbox')).not.toBeInTheDocument();
 
     // 스트림으로 온 줄은 이어 붙는다.
     act(() => handlers.onMessage({ type: 'log', sessionId: 'wait1', lines: [mkLine(3, { text: '새 줄' })] }));
-    expect(within(panel).getByText('새 줄')).toBeInTheDocument();
+    expect(within(p).getByText('새 줄')).toBeInTheDocument();
 
     // 도구 탭에는 도구 줄만.
-    await user.click(within(panel).getByRole('tab', { name: /도구/ }));
-    expect(within(panel).queryByText('푸시해 줘')).not.toBeInTheDocument();
-    expect(within(panel).getByText('cat .env')).toBeInTheDocument();
+    await user.click(within(p).getByRole('tab', { name: /도구/ }));
+    expect(within(p).queryByText('푸시해 줘')).not.toBeInTheDocument();
+    expect(within(p).getByText('cat .env')).toBeInTheDocument();
+  });
+
+  it('도구 명령은 한 번만 보이고, 여러 줄 본문은 펼쳐서 본다', async () => {
+    vi.mocked(api.getLog).mockResolvedValue(page([
+      mkLine(0, { role: 'tool', toolName: 'Bash', text: 'npm test -- rank', toolInput: { command: 'npm test -- rank' } }),
+      mkLine(1, { role: 'tool', toolName: 'Bash', text: ' ✓ score.test.ts (12 tests)\n\n Tests  12 passed (12)' }),
+    ], 2));
+    const { user } = setup();
+    await user.click(card(/^search-api · /));
+    const p = panel();
+    expect(await within(p).findAllByText('npm test -- rank')).toHaveLength(1);
+    expect(within(p).getByText('✓ score.test.ts (12 tests)')).toBeInTheDocument();
+    expect(within(p).queryByText(/Tests 12 passed/)).not.toBeInTheDocument();
+    const more = within(p).getByRole('button', { name: '펼치기' });
+    expect(more).toHaveAttribute('aria-expanded', 'false');
+    await user.click(more);
+    expect(within(p).getByText(/Tests 12 passed/)).toBeInTheDocument();
+    expect(within(p).getByRole('button', { name: '접기' })).toHaveAttribute('aria-expanded', 'true');
+  });
+});
+
+describe('대화 페이지', () => {
+  it('최근 100줄만 불러오고, "이전 대화 더 보기"로 100줄씩 앞을 붙인다', async () => {
+    vi.mocked(api.getLog).mockImplementation(longLog(250));
+    const { user } = setup();
+    await user.click(card(/^search-api · /));
+    const p = panel();
+    expect(await within(p).findByText('전체 250줄 중 100줄')).toBeInTheDocument();
+    expect(within(p).getByText('줄 249')).toBeInTheDocument();
+    expect(within(p).queryByText('줄 149')).not.toBeInTheDocument();
+    // 일부만 불러왔으니 탭 숫자는 뺀다.
+    expect(within(p).getByRole('tab', { name: '대화' })).toBeInTheDocument();
+
+    await user.click(within(p).getByRole('button', { name: '이전 대화 더 보기' }));
+    expect(api.getLog).toHaveBeenLastCalledWith('wait1', { before: 150 });
+    expect(await within(p).findByText('줄 50')).toBeInTheDocument();
+    expect(within(p).getByText('전체 250줄 중 200줄')).toBeInTheDocument();
+
+    await user.click(within(p).getByRole('button', { name: '이전 대화 더 보기' }));
+    expect(await within(p).findByText('줄 0')).toBeInTheDocument();
+    expect(within(p).queryByRole('button', { name: '이전 대화 더 보기' })).not.toBeInTheDocument();
+  });
+
+  it('전체를 다 불러왔으면 탭에 정확한 수를 보인다', async () => {
+    vi.mocked(api.getLog).mockResolvedValue(page([
+      mkLine(0, { role: 'user', text: '질문' }), mkLine(1, { text: '답' }), mkLine(2, { role: 'tool', toolName: 'Read', text: 'a.ts' }),
+    ], 3));
+    const { user } = setup();
+    await user.click(card(/^search-api · /));
+    expect(await within(panel()).findByRole('tab', { name: '대화 2' })).toBeInTheDocument();
+    expect(within(panel()).getByRole('tab', { name: '도구 1' })).toBeInTheDocument();
+    expect(within(panel()).queryByText(/^전체 \d+줄 중/)).not.toBeInTheDocument();
+  });
+
+  it('다시 연결되면 최신에 붙어 있는 대화만 마지막 줄 뒤부터 채운다', async () => {
+    vi.mocked(api.getLog).mockImplementation(longLog(250));
+    const { user } = setup();
+    await user.click(card(/^search-api · /));
+    await within(panel()).findByText('줄 249');
+    act(() => handlers.onMessage(snapshot()));
+    await waitFor(() => expect(api.getLog).toHaveBeenLastCalledWith('wait1', { after: 249 }));
+  });
+});
+
+describe('대화 검색', () => {
+  const hits = [
+    { seq: 240, role: 'assistant' as const, at: '2026-11-14T00:00:00Z', snippet: 'git push origin main 을 실행합니다' },
+    { seq: 20, role: 'tool' as const, at: '2026-11-14T00:00:00Z', toolName: 'Bash', snippet: 'git push --force' },
+  ];
+  async function openLong() {
+    vi.mocked(api.getLog).mockImplementation(longLog(250, (l) =>
+      l.seq === 20 ? { ...l, text: '그 다음 git push --force 실행' } : l.seq === 240 ? { ...l, text: 'git push origin main 을 실행합니다' } : l));
+    vi.mocked(api.searchLog).mockResolvedValue({ hits, total: 2 });
+    const r = setup();
+    await r.user.click(card(/^search-api · /));
+    await within(panel()).findByText('줄 249');
+    return r;
+  }
+  const box = () => within(panel()).getByRole('searchbox', { name: '대화 검색' });
+
+  it('Enter로 세션 전체에서 찾고, 결과를 누르면 그 줄로 범위를 옮겨 강조한다', async () => {
+    const { user, container } = await openLong();
+    await user.type(box(), 'push{Enter}');
+    expect(api.searchLog).toHaveBeenCalledWith('wait1', 'push');
+    expect(await within(panel()).findByText('2건')).toBeInTheDocument();
+    const list = within(panel()).getByRole('list', { name: '검색 결과' });
+    expect(within(list).getAllByRole('button')).toHaveLength(2);
+    expect(list.querySelector('mark')).toHaveTextContent('push');
+
+    await user.click(within(list).getByRole('button', { name: /git push --force/ }));
+    expect(api.getLog).toHaveBeenLastCalledWith('wait1', { around: 20 });
+    await waitFor(() => expect(container.querySelector('[data-seq="20"]')).toHaveClass('hit'));
+    expect(container.querySelector('[data-seq="20"] mark')).toHaveTextContent('push');
+
+    // 과거를 보는 중에는 새 줄을 붙이지 않고 알려 준다.
+    act(() => handlers.onMessage({ type: 'log', sessionId: 'wait1', lines: [mkLine(250, { text: '새 줄' })] }));
+    expect(within(panel()).queryByText('새 줄')).not.toBeInTheDocument();
+    await user.click(within(panel()).getByRole('button', { name: '새 대화 1줄 · 최신으로' }));
+    expect(api.getLog).toHaveBeenLastCalledWith('wait1');
+  });
+
+  it('이전·다음 결과 버튼으로 옮겨 다닌다(불러온 범위 안이면 다시 부르지 않는다)', async () => {
+    const { user, container } = await openLong();
+    await user.type(box(), 'push{Enter}');
+    await within(panel()).findByText('2건');
+    const calls = vi.mocked(api.getLog).mock.calls.length;
+    await user.click(within(panel()).getByRole('button', { name: '이전 결과' }));
+    await waitFor(() => expect(container.querySelector('[data-seq="240"]')).toHaveClass('hit'));
+    expect(vi.mocked(api.getLog).mock.calls.length).toBe(calls);
+    await user.click(within(panel()).getByRole('button', { name: '이전 결과' }));
+    await waitFor(() => expect(container.querySelector('[data-seq="20"]')).toHaveClass('hit'));
+    expect(within(panel()).getByRole('button', { name: '이전 결과' })).toBeDisabled();
+    await user.click(within(panel()).getByRole('button', { name: '다음 결과' }));
+    expect(api.getLog).toHaveBeenLastCalledWith('wait1', { around: 240 });
+  });
+
+  it('입력을 멈추면 300ms 뒤 찾고, 2자 미만이면 요청하지 않는다', async () => {
+    const { user } = await openLong();
+    await user.type(box(), 'p');
+    await new Promise((r) => setTimeout(r, 400));
+    expect(api.searchLog).not.toHaveBeenCalled();
+    await user.type(box(), 'u');
+    await waitFor(() => expect(api.searchLog).toHaveBeenCalledWith('wait1', 'pu'));
+  });
+
+  it('없으면 "찾은 대화가 없습니다", 많으면 "최근 50건만 표시"', async () => {
+    const { user } = await openLong();
+    vi.mocked(api.searchLog).mockResolvedValueOnce({ hits: [], total: 0 });
+    await user.type(box(), 'zz{Enter}');
+    expect(await within(panel()).findByText('찾은 대화가 없습니다')).toBeInTheDocument();
+    vi.mocked(api.searchLog).mockResolvedValue({ hits, total: 75 });
+    await user.clear(box());
+    await user.type(box(), 'git{Enter}');
+    expect(await within(panel()).findByText('75건')).toBeInTheDocument();
+    expect(within(panel()).getByText('최근 50건만 표시')).toBeInTheDocument();
+  });
+
+  it('Esc나 × 버튼으로 지우면 결과와 강조가 사라진다', async () => {
+    const { user, container } = await openLong();
+    await user.type(box(), 'push{Enter}');
+    await user.click(await within(panel()).findByRole('button', { name: /git push origin main/ }));
+    await waitFor(() => expect(container.querySelector('.hit')).not.toBeNull());
+    await user.type(box(), '{Escape}');
+    expect(box()).toHaveValue('');
+    expect(within(panel()).queryByRole('list', { name: '검색 결과' })).not.toBeInTheDocument();
+    expect(container.querySelector('.hit')).toBeNull();
+    expect(container.querySelector('.log mark')).toBeNull();
+
+    await user.type(box(), 'push{Enter}');
+    await within(panel()).findByText('2건');
+    await user.click(within(panel()).getByRole('button', { name: '검색 지우기' }));
+    expect(box()).toHaveValue('');
+    expect(within(panel()).queryByText('2건')).not.toBeInTheDocument();
+  });
+});
+
+describe('세션 지우기', () => {
+  it('종료·끊김 카드에만 지우기 버튼이 있고, 누르면 확인 없이 바로 사라진다(카드는 열리지 않음)', async () => {
+    const base = snapshot();
+    const lost = mkSession({ id: 'lost1', name: 'old-job', machineId: 'm2', status: 'lost', lastEventAt: ago(30) });
+    const { user } = setup({ ...base, sessions: [...base.sessions, lost] });
+    const home = screen.getByRole('region', { name: '집 PC' });
+    expect(within(home).queryByRole('button', { name: '세션 지우기' })).not.toBeInTheDocument();
+    const server = screen.getByRole('region', { name: 'server-b' });
+    const dels = within(server).getAllByRole('button', { name: '세션 지우기' });
+    expect(dels).toHaveLength(2);
+    expect(dels[0]).toHaveAttribute('title', '세션과 대화 기록을 지웁니다');
+
+    await user.click(dels[0]!);
+    expect(api.deleteSession).toHaveBeenCalledTimes(1);
+    expect(within(server).getAllByRole('button', { name: '세션 지우기' })).toHaveLength(1);
+    expect(api.getLog).not.toHaveBeenCalled();
+    expect(within(panel()).getByText(/카드를 누르면/)).toBeInTheDocument();
+  });
+
+  it('서버가 실패하면 되돌리고 짧은 오류를 보인다', async () => {
+    vi.mocked(api.deleteSession).mockRejectedValue(new api.ApiError(409, { error: 'session_active' }));
+    const { user } = setup();
+    await user.click(screen.getByRole('button', { name: '세션 지우기' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('세션을 지우지 못했습니다');
+    expect(card(/^homepage · /)).toBeInTheDocument();
+  });
+
+  it('상세 패널 머리에서도 지우고 상세를 닫는다', async () => {
+    const { user } = setup();
+    await user.click(card(/^homepage · /));
+    await user.click(within(panel()).getByRole('button', { name: '세션 지우기' }));
+    expect(api.deleteSession).toHaveBeenCalledWith('end1');
+    expect(within(panel()).getByText(/카드를 누르면/)).toBeInTheDocument();
+  });
+
+  it('실시간 removed 메시지로 지워지면 보고 있던 상세도 닫힌다', async () => {
+    const { user } = setup();
+    await user.click(card(/^homepage · /));
+    expect(within(panel()).getByText('homepage')).toBeInTheDocument();
+    act(() => handlers.onMessage({ type: 'removed', sessionIds: ['end1'] }));
+    expect(screen.queryByRole('button', { name: /^homepage · / })).not.toBeInTheDocument();
+    expect(within(panel()).getByText(/카드를 누르면/)).toBeInTheDocument();
+  });
+
+  it('간단히 보기 타일에서도 지운다(상세로 넘어가지 않는다)', async () => {
+    localStorage.setItem('cs-mode', 'deck');
+    const { user } = setup();
+    await user.click(screen.getByRole('button', { name: '세션 지우기' }));
+    expect(api.deleteSession).toHaveBeenCalledWith('end1');
+    expect(screen.queryByRole('button', { name: /^homepage · / })).not.toBeInTheDocument();
+    expect(localStorage.getItem('cs-mode')).toBe('deck');
+  });
+});
+
+describe('컴퓨터 묶음', () => {
+  it('세션이 없는 컴퓨터도 묶음 머리를 보이고, 상태 필터를 걸면 숨긴다', async () => {
+    const base = snapshot();
+    const { user } = setup({ ...base, machines: [...base.machines, mkMachine({ id: 'm3', name: '새 노트북', os: 'darwin' })] });
+    const g = screen.getByRole('region', { name: '새 노트북' });
+    expect(within(g).getByText('세션이 없습니다')).toBeInTheDocument();
+    // PC 아이콘(모니터 모양)
+    expect(g.querySelector('.g-ico rect')?.getAttribute('height')).toBe('14');
+    await user.click(screen.getByRole('button', { name: /^종료/ }));
+    expect(screen.queryByRole('region', { name: '새 노트북' })).not.toBeInTheDocument();
   });
 });
 

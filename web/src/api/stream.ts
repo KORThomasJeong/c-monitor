@@ -3,7 +3,7 @@
 // 서버는 연결될 때마다 snapshot을 먼저 보내므로 재연결 뒤 빠진 상태가 없다.
 import { API, type StreamMessage } from '@c-monitor/shared';
 
-const TYPES = new Set(['snapshot', 'session', 'log', 'limits', 'machine']);
+const TYPES = new Set(['snapshot', 'session', 'log', 'limits', 'machine', 'removed']);
 
 export type StreamHandlers = {
   onMessage: (msg: StreamMessage) => void;

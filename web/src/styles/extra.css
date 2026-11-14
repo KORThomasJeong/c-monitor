@@ -62,3 +62,109 @@ a.gbtn:hover{color:var(--text)}
 
 /* 연결 코드 입력 */
 .code-input{height:40px;font-family:var(--mono);font-size:16px;letter-spacing:2px;text-transform:uppercase;text-align:center}
+
+/* ── 대시보드 제목 줄: 왼쪽·오른쪽 전체 폭(상세 패널 윗선을 첫 카드 윗선에 맞춘다) ── */
+@media (min-width:1024px){
+  .wrap{display:grid;grid-template-columns:minmax(0,1fr) 440px;gap:24px;align-items:start}
+  .dash-title{grid-column:1/-1}
+  .wrap .left{grid-column:1}
+  .wrap .panel{grid-column:2}
+}
+@media (max-width:1023px){
+  .dash-title{margin-bottom:20px}
+  .app.open .dash-title{display:none}
+}
+/* 세션을 고르지 않았을 때 안내 상자 */
+.p-empty{min-height:360px;justify-content:center}
+
+/* ── 컴퓨터 묶음 머리: 이름 바로 옆에 연결 태그 ── */
+.g-line{display:flex;align-items:center;gap:8px;min-width:0}
+.g-line .g-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.g-empty{margin:0;padding:16px;border:1px dashed var(--border);border-radius:8px;text-align:center;font-size:12px;color:var(--ter)}
+
+/* ── 카드·타일 지우기 버튼(카드 버튼과 형제) ── */
+.card-wrap,.tile-wrap{position:relative;min-width:0;display:flex}
+.card-wrap > .card,.tile-wrap > .tile{flex:1 1 auto;min-width:0}
+.tile-wrap{min-height:0}
+.del-btn{position:absolute;top:12px;right:12px;width:32px;height:32px;display:grid;place-items:center;padding:0;border:1px solid var(--border2);border-radius:6px;background:var(--surface);color:var(--ter);cursor:pointer;transition:background .1s var(--ease),color .1s var(--ease)}
+.del-btn::after{content:'';position:absolute;inset:-6px}
+.del-btn:hover{background:var(--danger-soft);color:var(--danger-text);border-color:var(--danger)}
+.del-btn:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+.card-wrap.can-del .c-top{padding-right:40px}
+.tile-wrap .del-btn{top:16px;right:16px}
+.tile-wrap.can-del .t-head{padding-right:40px}
+.icon-btn.p-del:hover{background:var(--danger-soft);color:var(--danger-text);border-color:var(--danger)}
+.icon-btn:disabled{opacity:.5;cursor:not-allowed}
+.icon-btn:disabled:hover{background:var(--surface);color:var(--sub)}
+
+/* 짧은 오류 문구 */
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:50;max-width:calc(100% - 32px);padding:12px 16px;border:1px solid var(--danger);border-radius:8px;background:var(--danger-soft);color:var(--danger-text);font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,.12)}
+
+/* ── 대화 검색 ── */
+.p-search{padding:12px 20px;border-bottom:1px solid var(--border2);display:flex;flex-direction:column;gap:8px}
+.s-row{display:flex;align-items:center;gap:8px;min-width:0}
+.s-field{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:8px;height:40px;padding:0 4px 0 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--ter);cursor:text}
+.s-field:focus-within{border-color:var(--vivid);box-shadow:0 0 0 2px var(--ring)}
+.s-input{flex:1 1 auto;min-width:0;height:100%;border:0;padding:0;background:transparent;color:var(--text);font:inherit;outline:none;-webkit-appearance:none;appearance:none}
+.s-input::placeholder{color:var(--ter)}
+.s-input::-webkit-search-cancel-button{display:none}
+.s-clear{width:32px;height:32px;flex:none;display:grid;place-items:center;padding:0;border:0;border-radius:4px;background:none;color:var(--ter);cursor:pointer}
+.s-clear:hover{background:var(--hover);color:var(--text)}
+.s-clear:focus-visible,.hit-item:focus-visible,.tool-more:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+.s-nav{display:flex;align-items:center;gap:4px;flex:none}
+.s-count{font-size:12px;color:var(--sub);white-space:nowrap;margin-right:4px}
+.s-status{font-size:12px;color:var(--ter)}
+.s-status:empty{display:none}
+.hits{list-style:none;margin:0;padding:0;max-height:168px;overflow:auto;border:1px solid var(--border2);border-radius:6px;background:var(--surface)}
+.hits li + li{border-top:1px solid var(--border2)}
+.hit-item{width:100%;min-height:44px;display:flex;flex-direction:column;gap:2px;padding:8px 12px;border:0;background:none;text-align:left;cursor:pointer}
+.hit-item:hover{background:var(--hover)}
+.hit-item.on{background:var(--selected)}
+.hit-meta{font-size:12px;color:var(--ter)}
+.hit-text{font-size:12px;color:var(--text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+.app mark{background:var(--warn-soft);color:var(--warn-text);border-radius:2px;padding:0 1px;box-shadow:inset 0 -2px 0 var(--warn)}
+.ln.hit{outline:2px solid var(--warn);outline-offset:4px;border-radius:6px;animation:hitFlash 1.6s var(--ease) 2}
+@keyframes hitFlash{0%,100%{background:transparent}50%{background:var(--warn-soft)}}
+
+/* 페이지 안내와 "최신으로" */
+.log-range{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--ter)}
+.log-range:has(> button:only-child){justify-content:center}
+.to-latest{position:sticky;bottom:0;display:flex;justify-content:center;padding:8px 0 0;pointer-events:none;margin-top:auto}
+.to-latest .btn{pointer-events:auto;box-shadow:0 2px 8px rgba(0,0,0,.16)}
+
+/* 도구 줄: 여러 줄 본문 펼치기 */
+.tool-more{flex:none;height:24px;padding:0 6px;border:0;border-radius:4px;background:none;color:var(--primary-soft-text);font-size:12px;cursor:pointer}
+.tool-more:hover{background:var(--primary-soft)}
+.tool-out{margin:4px 0 0;padding:8px 12px;max-height:320px;overflow:auto;font-family:var(--mono);font-size:12px;line-height:1.6667;color:var(--sub);background:var(--sunken);border:1px solid var(--border2);border-radius:6px;white-space:pre-wrap;overflow-wrap:anywhere}
+
+/* 1024px 미만: 상세가 전체 화면일 때 머리·검색은 그대로 두고 대화만 스크롤 */
+@media (max-width:1023px) and (min-height:501px){
+  .app.open .panel{height:calc(100vh - 64px - 32px);height:calc(100dvh - 64px - 32px)}
+  .app.open .panel .log{flex:1 1 auto;min-height:0}
+  .hits{max-height:30vh}
+}
+@media (max-width:767px) and (min-height:501px){
+  .app.open .panel{height:calc(100vh - 56px);height:calc(100dvh - 56px);min-height:0}
+}
+@media (max-width:767px){
+  .p-search{padding:12px 16px}
+  .s-input{font-size:16px}
+  /* 상태 필터 줄은 줄바꿈해서 390px 폭에서도 모두 보이게 */
+  .seg-box{overflow:visible;margin:0;padding:0}
+  .seg{display:flex;flex-wrap:wrap}
+}
+
+/* 휴대폰 가로 간단히 보기: 8개를 넘으면 타일 최소 높이를 두고 세로로 스크롤 */
+@media (orientation:landscape) and (max-height:500px){
+  .deck.many{grid-auto-rows:minmax(124px,1fr)}
+  .tile-wrap .del-btn{top:10px;right:10px;width:28px;height:28px}
+}
+
+/* 승인 대기: 돌아갈 링크 */
+.next-link{flex-direction:column;gap:4px}
+.next-url{font-family:var(--mono);overflow-wrap:anywhere}
+
+@media (prefers-reduced-motion:reduce){
+  .ln.hit{animation:none;background:var(--warn-soft)}
+  .del-btn,.tool-more,.hit-item{transition:none}
+}

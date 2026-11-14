@@ -1,6 +1,7 @@
 // 대시보드: 상세 보기(한도 카드·필터·컴퓨터별 묶음·상세 패널)와 간단히 보기(타일)를 오간다.
 import type { MeResponse, SessionStatus } from '@c-monitor/shared';
-import { useCallback, useMemo, useState } from 'react';
+import * as api from '../api/client';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Header } from '../components/Header';
 import { BellIcon, GridIcon, ListIcon, PcIcon, ServerIcon } from '../components/Icons';
 import { LimitCards, LimitPills } from '../components/Limits';
@@ -23,7 +24,7 @@ const MODES = ['detail', 'deck'] as const;
 
 export function Dashboard({ me }: { me: MeResponse }) {
   const data = useDashboard();
-  const { sessions, machines, accounts, logs, connected, loaded, markSeen, loadLog } = data;
+  const { sessions, machines, accounts, logs, connected, loaded, markSeen, openLog, loadOlder, jumpTo, removeSession } = data;
   const theme = useTheme();
   const now = useNow();
   const [mode, setMode] = useStoredChoice(MODE_KEY, MODES, 'detail');
@@ -31,6 +32,14 @@ export function Dashboard({ me }: { me: MeResponse }) {
   const [sel, setSel] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('chat');
   const [limitsOpen, setLimitsOpen] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // 짧은 오류 문구는 몇 초 뒤 사라진다.
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(t);
+  }, [notice]);
 
   const styleOf = useMemo(() => accountStyles(accounts), [accounts]);
   const current = sessions.find((s) => s.id === sel) ?? null;
@@ -45,13 +54,22 @@ export function Dashboard({ me }: { me: MeResponse }) {
     setSel(id);
     setTab('chat');
     if (s && isWaitLike(s.status) && !s.seen) markSeen(id);
-    void loadLog(id);
-  }, [sessions, markSeen, loadLog]);
+    void openLog(id);
+  }, [sessions, markSeen, openLog]);
+
+  /** 확인 없이 바로 지운다. 화면에서 먼저 없애고, 서버가 실패하면 되돌린다. */
+  const remove = useCallback(async (id: string) => {
+    setSel((cur) => (cur === id ? null : cur));
+    setNotice(null);
+    const ok = await removeSession(id);
+    if (!ok) setNotice('세션을 지우지 못했습니다. 잠시 뒤 다시 시도해 주세요.');
+  }, [removeSession]);
 
   const openFromDeck = (id: string) => { setMode('detail'); open(id); };
 
+  // 상태 필터가 없으면 세션이 없는 컴퓨터도 묶음 머리를 보인다.
   const groups = groupByMachine(sessions.filter((s) => passes(filter, s.status)), machines)
-    .filter((g) => g.sessions.length > 0);
+    .filter((g) => g.sessions.length > 0 || filter === 'all');
   const countBy = (f: Filter) => sessions.filter((s) => passes(f, s.status)).length;
   const lastActivity = sessions.reduce<string | null>((m, s) => (!m || s.lastEventAt > m ? s.lastEventAt : m), null);
 
@@ -96,18 +114,19 @@ export function Dashboard({ me }: { me: MeResponse }) {
       />
 
       {mode === 'deck' ? (
-        <Deck sessions={sessions} machines={machines} styleOf={styleOf} now={now} onOpen={openFromDeck} />
+        <Deck sessions={sessions} machines={machines} styleOf={styleOf} now={now} onOpen={openFromDeck} onDelete={remove} />
       ) : (
         <div className="wrap">
+          {/* 제목 줄은 왼쪽·오른쪽 전체 폭에 걸친다. 그래야 상세 패널 윗선이 첫 카드 윗선과 맞는다. */}
+          <div className="dash-title">
+            <h1 className="h1">세션 현황</h1>
+            <p className="sub">
+              {loaded
+                ? `세션 ${sessions.length}개 · 컴퓨터 ${machines.length}대${lastActivity ? ` · 마지막 활동 ${formatAgo(lastActivity, now)}` : ''}`
+                : '불러오는 중입니다'}
+            </p>
+          </div>
           <main className="left">
-            <div>
-              <h1 className="h1">세션 현황</h1>
-              <p className="sub">
-                {loaded
-                  ? `세션 ${sessions.length}개 · 컴퓨터 ${machines.length}대${lastActivity ? ` · 마지막 활동 ${formatAgo(lastActivity, now)}` : ''}`
-                  : '불러오는 중입니다'}
-              </p>
-            </div>
 
             <LimitCards
               accounts={accounts}
@@ -128,7 +147,7 @@ export function Dashboard({ me }: { me: MeResponse }) {
               </div>
             </div>
 
-            {loaded && sessions.length === 0 && (
+            {loaded && sessions.length === 0 && machines.length === 0 && (
               <div className="empty">
                 <p>아직 연결된 세션이 없습니다.</p>
                 <p className="hint">클로드코드에서 <code>/c-monitor:connect {window.location.origin}</code>를 실행해 컴퓨터를 연결해 주세요.</p>
@@ -148,33 +167,48 @@ export function Dashboard({ me }: { me: MeResponse }) {
                   <div className="g-head">
                     <span className="g-ico" aria-hidden="true">{isPcOs(m.os) ? <PcIcon size={16} /> : <ServerIcon size={16} />}</span>
                     <div className="g-text">
-                      <div className="g-name">{m.name}</div>
+                      <div className="g-line">
+                        <span className="g-name" title={m.name}>{m.name}</span>
+                        {m.id !== '__unknown' && (
+                          <span className={m.online ? 'tag green' : 'tag neutral'}><span className="dot" />{m.online ? '연결됨' : '오프라인'}</span>
+                        )}
+                      </div>
                       <div className="g-meta">{meta}</div>
                     </div>
-                    <span className={m.online ? 'tag green' : 'tag neutral'}><span className="dot" />{m.online ? '연결됨' : '오프라인'}</span>
                   </div>
-                  <div className="cards">
-                    {sortSessions(list).map((s) => (
-                      <SessionCard key={s.id} s={s} acct={styleOf(s.account)} selected={s.id === sel} now={now} onOpen={open} />
-                    ))}
-                  </div>
+                  {list.length === 0 ? (
+                    <p className="g-empty">세션이 없습니다</p>
+                  ) : (
+                    <div className="cards">
+                      {sortSessions(list).map((s) => (
+                        <SessionCard key={s.id} s={s} acct={styleOf(s.account)} selected={s.id === sel} now={now} onOpen={open} onDelete={remove} />
+                      ))}
+                    </div>
+                  )}
                 </section>
               );
             })}
           </main>
 
           <DetailPanel
+            key={current?.id ?? 'none'}
             session={current}
             machine={current ? machines.find((m) => m.id === current.machineId) ?? null : null}
-            lines={current ? logs[current.id] : undefined}
+            log={current ? logs[current.id] : undefined}
             tab={tab}
             onTab={setTab}
             onClose={() => setSel(null)}
             connected={connected}
             now={now}
+            onLoadOlder={current ? () => loadOlder(current.id) : undefined}
+            onJump={current ? (seq) => jumpTo(current.id, seq) : undefined}
+            onLatest={current ? () => openLog(current.id) : undefined}
+            onSearch={current ? (q) => api.searchLog(current.id, q) : undefined}
+            onDelete={current ? () => void remove(current.id) : undefined}
           />
         </div>
       )}
+      {notice && <div className="toast" role="alert">{notice}</div>}
     </div>
   );
 }

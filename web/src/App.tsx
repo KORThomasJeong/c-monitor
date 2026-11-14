@@ -41,7 +41,8 @@ function Authed({ pathname, search }: { pathname: string; search: URLSearchParam
     api.getMe()
       .then((me) => {
         if (!live) return;
-        if (me.user.status === 'pending') navigate('/pending', { replace: true });
+        // 연결 링크(/connect?code=…) 등으로 들어왔으면 승인 뒤 돌아갈 수 있게 주소를 넘긴다.
+        if (me.user.status === 'pending') navigate(`/pending${api.nextQuery()}`, { replace: true });
         setState({ me });
       })
       // 401·403(pending)은 client가 이미 화면을 옮겼다.
