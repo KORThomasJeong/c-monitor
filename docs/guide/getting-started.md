@@ -1,6 +1,6 @@
 # 시작하기
 
-C-Monitor를 쓰려면 두 가지가 필요합니다. 웹 대시보드에 로그인할 수 있는 승인된 계정, 그리고 세션을 볼 컴퓨터마다 설치한 플러그인입니다. 이 문서는 운영 서버 `https://c-monitor.example.com` 기준으로 적었습니다. 서버를 직접 올렸다면 주소만 바꿔 읽으면 됩니다([직접 서버 올리기](self-hosting.md)). 구글 로그인 설정은 [google-oauth.md](google-oauth.md)에 있습니다.
+C-Monitor를 쓰려면 두 가지가 필요합니다. 웹 대시보드에 로그인할 수 있는 승인된 계정, 그리고 세션을 볼 컴퓨터마다 설치한 플러그인입니다. 이 문서는 서버 주소를 예시 `https://c-monitor.example.com`으로 적었습니다. 실제로 쓰는 서버 주소로 바꿔 읽으면 됩니다([직접 서버 올리기](self-hosting.md)). 구글 로그인 설정은 [google-oauth.md](google-oauth.md)에 있습니다.
 
 ## 1. 가입 신청과 승인
 

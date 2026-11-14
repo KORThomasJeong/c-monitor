@@ -4,7 +4,7 @@
 
 ## 1. 한 줄 요약
 
-여러 컴퓨터에서 도는 클로드코드 세션의 상태·대화·5시간/주간 한도를 `https://c-monitor.example.com` 한 화면에서 실시간으로 보고, 필요하면 웹에서 답장하는 서비스. GitHub의 플러그인을 설치하고 `/c-monitor:connect <서버주소>`로 연결한다.
+여러 컴퓨터에서 도는 클로드코드 세션의 상태·대화·5시간/주간 한도를 한 화면(운영 주소는 저장소에 적지 않음)에서 실시간으로 보고, 필요하면 웹에서 답장하는 서비스. GitHub의 플러그인을 설치하고 `/c-monitor:connect <서버주소>`로 연결한다.
 
 ## 2. 구성
 
@@ -73,7 +73,7 @@
 ## 10. 배포
 
 - server-a(aarch64), 도커 컴포즈: `c-monitor-app` + `c-monitor-db`(Postgres 17). 앱은 `npm-network` 합류, 호스트 포트 없음.
-- NPM 프록시 호스트 `c-monitor.example.com` → `c-monitor-app:3000`, 기존 와일드카드 인증서, Advanced에 `proxy_buffering off; proxy_read_timeout 1h;`.
+- NPM 프록시 호스트 `<운영 도메인>` → `c-monitor-app:3000`, 기존 와일드카드 인증서, Advanced에 `proxy_buffering off; proxy_read_timeout 1h;`.
 - Cloudflare A 레코드(proxied) → <서버 IP>.
 - 개발 DB: 원격 Postgres 17에 로컬 SSH 터널로 접속, 주소는 `.env.dev`의 `DATABASE_URL`(커밋하지 않음).
 - 저장소: 공개 `KORThomasJeong/c-monitor`. 비밀 정보 커밋 금지.

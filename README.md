@@ -4,7 +4,6 @@
 
 집 PC에서 하나, 서버에서 둘, 빌드용 가상 머신에서 하나 — 이렇게 세션이 흩어져 있어도 어느 세션이 승인을 기다리는지, 어느 세션이 끝났는지, 어느 계정의 한도가 바닥나는지를 브라우저 하나로 봅니다. 휴대폰에서도 같은 화면을 씁니다.
 
-- 운영 주소: <https://c-monitor.example.com>
 - 눌러 볼 수 있는 데모: <https://korthomasjeong.github.io/c-monitor/> (실제 화면을 예시 데이터로 돌리는 데모이며 실제 서버와 연결되지 않습니다)
 - 사용 설명서: [docs/guide/](docs/guide/README.md)
 
