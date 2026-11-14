@@ -313,6 +313,25 @@ describe('대화 검색', () => {
     expect(api.getLog).toHaveBeenLastCalledWith('wait1', { around: 240 });
   });
 
+  it('좁은 화면에서는 결과를 고르면 목록을 접고 "목록"으로 다시 편다', async () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({
+      matches: q.includes('max-width:1023px'), media: q, addEventListener() {}, removeEventListener() {},
+    }));
+    try {
+      const { user } = await openLong();
+      await user.type(box(), 'push{Enter}');
+      const list = await within(panel()).findByRole('list', { name: '검색 결과' });
+      await user.click(within(list).getByRole('button', { name: /git push origin main/ }));
+      expect(within(panel()).queryByRole('list', { name: '검색 결과' })).not.toBeInTheDocument();
+      const toggle = within(panel()).getByRole('button', { name: '목록' });
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      await user.click(toggle);
+      expect(within(panel()).getByRole('list', { name: '검색 결과' })).toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('입력을 멈추면 300ms 뒤 찾고, 2자 미만이면 요청하지 않는다', async () => {
     const { user } = await openLong();
     await user.type(box(), 'p');

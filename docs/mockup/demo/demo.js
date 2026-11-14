@@ -12,6 +12,7 @@
  *   - mode  : detail | deck           (대시보드 상세 / 간단히 보기)
  *   - user  : admin | user | pending  (로그인한 사람의 권한·상태, 기본 admin)
  *   - sel   : 세션 이름 또는 id       (대시보드에서 그 세션 상세를 연다)
+ *             대화가 긴 세션은 api-gateway(200줄 넘음). "이전 대화 더 보기"와 검색을 눌러 볼 수 있다.
  *
  * 앱은 location.pathname으로 화면을 고르므로 여기서 history.replaceState로 주소를 view 값으로 바꾼다.
  * 그러면 상대 경로 자산이 엉뚱한 곳을 가리키게 되므로, 빌드 스크립트가 넣어 둔 자산 목록
@@ -235,6 +236,21 @@
       .a('라우트별 토큰 검사 코드를 먼저 모두 찾아보겠습니다.')
       .tu('Grep', { pattern: 'verifyToken\\(', path: 'src' })
       .tr('Grep', files.slice(2, 5).map(function (f, i) { return f + ':' + (12 + i * 7) + ':  const user = verifyToken(req.headers.authorization);'; }).join('\n'));
+    // 대화가 긴 세션: "이전 대화 더 보기"와 검색을 눌러 볼 수 있게 라우트 30개를 하나씩 점검한 기록을 넣는다.
+    var routes = ['accounts', 'addresses', 'admin', 'audit', 'billing', 'carts', 'categories', 'coupons', 'devices', 'exports',
+      'files', 'health', 'imports', 'invoices', 'jobs', 'labels', 'locales', 'notes', 'notifications', 'payments',
+      'plans', 'refunds', 'reports', 'reviews', 'roles', 'search', 'shipments', 'stock', 'teams', 'webhooks'];
+    L.a('라우트가 많아서 하나씩 열어 토큰 검사 방식을 정리하겠습니다. 모두 ' + routes.length + '개입니다.');
+    routes.forEach(function (r, i) {
+      var f = 'src/routes/' + r + '.ts';
+      L.tu('Read', { file_path: f })
+        .tr('Read', '// ' + f + '\nimport { Router } from "express";\nconst router = Router();\n…')
+        .tu('Grep', { pattern: 'verifyToken|requireUser', path: f })
+        .tr('Grep', f + ':' + (10 + i) + ':  const user = ' + (i % 3 === 0 ? 'requireUser(req);' : 'verifyToken(req.headers.authorization);'))
+        .a((i + 1) + '/' + routes.length + ' ' + r + ': ' + (i % 3 === 0 ? '이미 requireUser를 씁니다.' : 'verifyToken을 직접 부릅니다. 만료 응답은 ' + (i % 7 === 0 ? '403' : '401') + '입니다.'));
+      if (i % 5 === 4) L.tu('Bash', { command: 'npm test -- --run ' + r }).tr('Bash', ' ✓ test/' + r + '.test.ts (' + (6 + i % 4) + ' tests)');
+    });
+    L.a('점검을 마쳤습니다. ' + routes.length + '개 가운데 10개는 이미 requireUser를 쓰고, 나머지 20개를 옮기면 됩니다. 만료 토큰에 403을 주는 곳이 몇 군데 있어 따로 표시해 두었습니다.', 60);
     files.forEach(function (f, i) {
       L.tu('Read', { file_path: f }).tr('Read', '// ' + f + '\nimport { Router } from "express";\n…');
       if (i % 2 === 1) L.a(f + '에서도 같은 검사 코드가 반복됩니다. 오류 응답 모양이 라우트마다 조금씩 달라서, 합칠 때 기존 응답을 그대로 지키도록 하겠습니다.', 30);
@@ -577,6 +593,19 @@
       });
     }
 
+    // 종료·끊김 세션만 지운다(그 밖은 409). 지우면 대화도 함께 없애고 removed를 알린다.
+    if ((m = /^\/api\/sessions\/([^/]+)$/.exec(p)) && method === 'DELETE') {
+      if ((g = guard('active'))) return g;
+      var did = decodeURIComponent(m[1]);
+      var ds = sessionById(did);
+      if (!ds) return notFound();
+      if (ds.status !== 'end' && ds.status !== 'lost') return J(409, { error: 'session_active' });
+      sessions = sessions.filter(function (x) { return x.id !== did; });
+      delete logs[did];
+      publish({ type: 'removed', sessionIds: [did] });
+      return J(200, { ok: true });
+    }
+
     if ((m = /^\/api\/sessions\/([^/]+)\/seen$/.exec(p)) && method === 'POST') {
       if ((g = guard('active'))) return g;
       var s = sessionById(decodeURIComponent(m[1]));
@@ -704,8 +733,10 @@
     e.preventDefault();
     loggedIn = true;
     var next = u.searchParams.get('next');
-    if (me().status === 'pending') go('/pending');
-    else go(next && next.charAt(0) === '/' && next.charAt(1) !== '/' ? next : '/');
+    var safe = next && next.charAt(0) === '/' && next.charAt(1) !== '/' ? next : null;
+    // 승인 대기 사용자도 돌아갈 주소(예: 연결 링크)를 잃지 않는다.
+    if (me().status === 'pending') go('/pending' + (safe ? '?next=' + encodeURIComponent(safe) : ''));
+    else go(safe || '/');
   }, true);
 
   // ── 주소 바꾸기와 앱 불러오기 ──────────────────────────

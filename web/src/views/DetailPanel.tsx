@@ -144,11 +144,17 @@ function StatusBox({ s, now }: { s: SessionView; now: number }) {
   }
 }
 
-/** 대화가 패널 안에서 스크롤되면 그 상자, 아니면(휴대폰 가로 등) 문서 전체. */
+/** 상세가 전체 화면이고 높이가 낮은 화면(휴대폰 가로)에서는 패널 높이를 고정하지 않아 문서 전체가 스크롤된다(extra.css와 같은 조건). */
+const PAGE_SCROLL = '(max-width:1023px) and (max-height:500px)';
+
+/** 대화를 스크롤하는 상자: 보통은 대화 상자, 휴대폰 가로에서는 문서 전체. */
 function scrollBox(el: HTMLElement): HTMLElement {
-  if (el.scrollHeight > el.clientHeight + 1) return el;
+  let page = false;
+  try { page = window.matchMedia?.(PAGE_SCROLL).matches ?? false; } catch { page = false; }
+  if (!page) return el;
   return (document.scrollingElement as HTMLElement | null) ?? document.documentElement;
 }
+const narrow = () => { try { return window.matchMedia?.('(max-width:1023px)').matches ?? false; } catch { return false; } };
 const nearBottom = (box: HTMLElement) => box.scrollHeight - box.scrollTop - box.clientHeight < 48;
 
 type Search = {
@@ -157,10 +163,41 @@ type Search = {
   res: LogSearchResponse;
 };
 
+/**
+ * PC에서 패널은 스크롤을 따라다닌다(sticky). 맨 위에 있을 때도 패널 아래 끝이 화면 안에 들어오게
+ * 최대 높이를 "화면 높이 - 패널 윗선 - 아래 여백"으로 맞춘다.
+ */
+function useFitHeight(ref: { current: HTMLElement | null }) {
+  useEffect(() => {
+    let frame = 0;
+    const fit = () => {
+      frame = 0;
+      const el = ref.current;
+      if (!el) return;
+      let pc = false;
+      try { pc = window.matchMedia?.('(min-width:1024px)').matches ?? false; } catch { pc = false; }
+      if (!pc) { el.style.maxHeight = ''; return; }
+      const top = Math.max(24, el.getBoundingClientRect().top);
+      el.style.maxHeight = `${Math.max(320, window.innerHeight - top - 24)}px`;
+    };
+    const on = () => { if (!frame) frame = requestAnimationFrame(fit); };
+    fit();
+    window.addEventListener('scroll', on, { passive: true });
+    window.addEventListener('resize', on);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      window.removeEventListener('scroll', on);
+      window.removeEventListener('resize', on);
+    };
+  }, [ref]);
+}
+
 export function DetailPanel(props: Props) {
   const { session: s, machine, log, tab, onTab, onClose, connected, now } = props;
   const { onLoadOlder, onJump, onLatest, onSearch, onDelete } = props;
   const logRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  useFitHeight(panelRef);
   /** 맨 아래 근처를 보고 있다(새 줄이 오면 따라 내려간다). */
   const stick = useRef(true);
   /** "이전 대화 더 보기" 직전의 높이·위치. 앞에 줄이 붙어도 보던 곳이 튀지 않게 맞춘다. */
@@ -173,6 +210,7 @@ export function DetailPanel(props: Props) {
   const [searching, setSearching] = useState(false);
   const [searchFailed, setSearchFailed] = useState(false);
   const [active, setActive] = useState<number | null>(null);
+  const [listOpen, setListOpen] = useState(true);
   const [focus, setFocus] = useState<{ seq: number; tick: number } | null>(null);
   const asked = useRef('');
   /** 이미 스크롤해 준 이동(tick). 실시간 줄이 붙을 때마다 다시 가운데로 끌어오지 않게 한다. */
@@ -198,7 +236,17 @@ export function DetailPanel(props: Props) {
     }
     if (focus && focusDone.current !== focus.tick) {
       const target = el.querySelector<HTMLElement>(`[data-seq="${focus.seq}"]`);
-      if (target) { focusDone.current = focus.tick; target.scrollIntoView?.({ block: 'center' }); }
+      if (target) {
+        focusDone.current = focus.tick;
+        // 패널 안에서 스크롤되면 그 상자만 움직인다(scrollIntoView는 페이지까지 끌어내린다).
+        if (scrollBox(el) === el) {
+          const t = target.getBoundingClientRect();
+          const b = el.getBoundingClientRect();
+          el.scrollTop += t.top - b.top - (el.clientHeight - t.height) / 2;
+        } else {
+          target.scrollIntoView?.({ block: 'center' });
+        }
+      }
       return;
     }
     if (stick.current && !log?.hasMoreAfter) {
@@ -246,6 +294,8 @@ export function DetailPanel(props: Props) {
       const res = await onSearch(q);
       if (id !== reqId.current) return true;
       setFound({ q, res: { hits: res?.hits ?? [], total: res?.total ?? 0 } });
+      setListOpen(true);
+      setListOpen(true);
       setActive(null);
       setFocus(null);
     } catch {
@@ -265,10 +315,12 @@ export function DetailPanel(props: Props) {
     return () => clearTimeout(t);
   }, [text, runSearch]);
 
-  const goTo = async (i: number) => {
+  const goTo = async (i: number, fromList = false) => {
     const hit = found?.res.hits[i];
     if (!hit) return;
     setActive(i);
+    // 좁은 화면(상세가 전체 화면)에서는 결과를 고르면 목록을 접어 대화를 넓게 보여 준다.
+    if (fromList && narrow()) setListOpen(false);
     stick.current = false;
     if (tab === 'tool' && hit.role !== 'tool') onTab('chat');
     setFocus((f) => ({ seq: hit.seq, tick: (f?.tick ?? 0) + 1 }));
@@ -308,7 +360,7 @@ export function DetailPanel(props: Props) {
 
   if (!s) {
     return (
-      <aside className="panel" aria-label="세션 상세">
+      <aside className="panel" aria-label="세션 상세" ref={panelRef}>
         <div className="p-empty">
           <PanelIcon size={32} />
           <p>카드를 누르면 그 세션의 대화가 여기에 실시간으로 표시됩니다.</p>
@@ -343,7 +395,7 @@ export function DetailPanel(props: Props) {
   const tabTitle = complete ? undefined : '불러온 대화만 셉니다';
 
   return (
-    <aside className="panel" aria-label="세션 상세">
+    <aside className="panel" aria-label="세션 상세" ref={panelRef}>
       <div className="p-head">
         <div className="p-top">
           <button type="button" className="icon-btn back" aria-label="목록으로" onClick={onClose}><BackIcon /></button>
@@ -394,6 +446,11 @@ export function DetailPanel(props: Props) {
             {found && found.res.total > 0 && (
               <div className="s-nav">
                 <span className="s-count">{found.res.total}건</span>
+                {hitCount > 0 && (
+                  <button type="button" className="btn sm s-list" aria-expanded={listOpen} onClick={() => setListOpen((v) => !v)}>
+                    {listOpen ? '목록 접기' : '목록'}
+                  </button>
+                )}
                 <button type="button" className="icon-btn s-step" aria-label="이전 결과" title="더 오래된 결과"
                   onClick={goOlder} disabled={active === hitCount - 1}>
                   <ChevronUpIcon size={16} />
@@ -411,11 +468,11 @@ export function DetailPanel(props: Props) {
             {!searching && found && found.res.total === 0 && '찾은 대화가 없습니다'}
             {!searching && found && found.res.total > hitCount && '최근 50건만 표시'}
           </div>
-          {found && hitCount > 0 && (
+          {found && hitCount > 0 && listOpen && (
             <ol className="hits" aria-label="검색 결과">
               {found.res.hits.map((h, i) => (
                 <li key={`${h.seq}-${i}`}>
-                  <button type="button" className={i === active ? 'hit-item on' : 'hit-item'} aria-current={i === active ? 'true' : undefined} onClick={() => void goTo(i)}>
+                  <button type="button" className={i === active ? 'hit-item on' : 'hit-item'} aria-current={i === active ? 'true' : undefined} onClick={() => void goTo(i, true)}>
                     <span className="hit-meta">{formatTime(h.at)} · {h.role === 'tool' ? h.toolName || '도구' : WHO[h.role]}</span>
                     <span className="hit-text"><Hl text={h.snippet} q={found.q} /></span>
                   </button>
