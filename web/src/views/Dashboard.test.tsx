@@ -43,7 +43,7 @@ const snapshot = (over: Partial<Snapshot> = {}): Snapshot => ({
     mkSession({ id: 'run1', name: 'c-monitor', machineId: 'm1', status: 'run', startedAt: ago(12), lastEventAt: ago(0) }),
     mkSession({ id: 'wait1', name: 'search-api', machineId: 'm1', status: 'wait', seen: false,
       activity: { label: 'Bash 실행 승인 요청', text: 'git push origin main' }, startedAt: ago(42), lastEventAt: ago(1) }),
-    mkSession({ id: 'done1', name: 'notes-sync', machineId: 'm1', status: 'done', startedAt: ago(30), lastEventAt: ago(4) }),
+    mkSession({ id: 'done1', name: 'notes-sync', machineId: 'm1', status: 'done', seen: false, startedAt: ago(30), lastEventAt: ago(4) }),
     mkSession({ id: 'lim1', name: 'blog-site', machineId: 'm2', status: 'limit', startedAt: ago(30), lastEventAt: ago(2) }),
     mkSession({ id: 'end1', name: 'homepage', machineId: 'm2', status: 'end', startedAt: ago(300), lastEventAt: ago(200), endedAt: ago(200) }),
   ],
@@ -126,6 +126,22 @@ describe('대시보드 상세', () => {
     await user.click(card(/^notes-sync · /));
     expect(card(/^notes-sync · /)).toHaveClass('unack', 'sel');
     expect(api.markSeen).not.toHaveBeenCalled();
+  });
+
+  it('done 카드는 상세의 "알람 끄기"를 눌러야 깜박임이 멈춘다', async () => {
+    const { user } = setup();
+    await user.click(card(/^notes-sync · /));
+    await user.click(screen.getByRole('button', { name: '알람 끄기' }));
+    expect(api.markSeen).toHaveBeenCalledWith('done1');
+    expect(card(/^notes-sync · /)).not.toHaveClass('unack');
+    expect(screen.queryByRole('button', { name: '알람 끄기' })).not.toBeInTheDocument();
+  });
+
+  it('이미 알람을 끈 done 카드는 깜박이지 않고 버튼도 없다', async () => {
+    const { user } = setup(snapshot({ sessions: [mkSession({ id: 'd2', name: 'acked', status: 'done', seen: true })] }));
+    expect(card(/^acked · /)).not.toHaveClass('unack');
+    await user.click(card(/^acked · /));
+    expect(screen.queryByRole('button', { name: '알람 끄기' })).not.toBeInTheDocument();
   });
 
   it('limit은 빨강(s-wait) 카드에 "한도 초과" 태그', () => {

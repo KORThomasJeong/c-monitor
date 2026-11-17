@@ -69,6 +69,26 @@ describe('수집', () => {
     expect(await one(a.cookie, 's3', a.machineId)).toMatchObject({ status: 'wait', seen: false });
   });
 
+  it('끝나면 seen=false(초록 깜박임), seen 호출(알람 끄기)로 true, 다음 작업 뒤 다시 끝나면 또 false', async () => {
+    // 막 열린 세션(입력 대기)은 깜박이지 않는다
+    await h.ingest(a.token, h.batch([h.ev('s3d', 'SessionStart', {})]));
+    expect(await one(a.cookie, 's3d', a.machineId)).toMatchObject({ status: 'done', seen: true });
+
+    await h.ingest(a.token, h.batch([h.ev('s3d', 'UserPromptSubmit', { prompt: 'x' }), h.ev('s3d', 'Stop', {})]));
+    expect(await one(a.cookie, 's3d', a.machineId)).toMatchObject({ status: 'done', seen: false });
+
+    const id = encodeURIComponent(`${a.machineId}:s3d`);
+    expect((await h.req('POST', `/api/sessions/${id}/seen`, { cookie: a.cookie })).status).toBe(200);
+    expect((await one(a.cookie, 's3d', a.machineId)).seen).toBe(true);
+
+    // 끝난 상태에서 또 오는 Stop은 알람을 다시 켜지 않는다
+    await h.ingest(a.token, h.batch([h.ev('s3d', 'Stop', {})]));
+    expect((await one(a.cookie, 's3d', a.machineId)).seen).toBe(true);
+
+    await h.ingest(a.token, h.batch([h.ev('s3d', 'UserPromptSubmit', { prompt: 'y' }), h.ev('s3d', 'Stop', {})]));
+    expect(await one(a.cookie, 's3d', a.machineId)).toMatchObject({ status: 'done', seen: false });
+  });
+
   it('활동 한 줄을 이벤트별로 만든다', async () => {
     const act = async (...evs: Parameters<typeof h.ev>[]) => {
       await h.ingest(a.token, h.batch(evs.map((e) => h.ev(...e))));

@@ -77,6 +77,9 @@ export function applyEvent(prev: SessionState | null, e: HookEvent, now: Date): 
   const asksUser = e.event === 'PreToolUse'
     || (e.event === 'Notification' && e.data?.notification_type !== 'idle_prompt');
   if (status === 'wait' && (prev?.status !== 'wait' || asksUser)) s.seen = false;
+  // 일이 끝났으면(Stop) "알람 끄기"를 누를 때까지 초록 깜박임. 새로 열린 세션(SessionStart)은 깜박이지 않는다.
+  const finished = e.event === 'Stop' || e.event === 'StopFailure';
+  if (status === 'done' && finished && prev?.status !== 'done') s.seen = false;
 
   s.status = status;
   s.endedAt = status === 'end' ? (prev?.status === 'end' && prev.endedAt ? prev.endedAt : at) : null;

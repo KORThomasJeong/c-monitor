@@ -26,12 +26,15 @@ export const isWaitLike = (s: SessionStatus) => s === 'wait' || s === 'limit';
 /** 빨강 깜박임: 답을 기다리는데 아직 열어 보지 않음. */
 export const isUnseen = (s: SessionView) => isWaitLike(s.status) && s.seen === false;
 
+/** 초록 깜박임: 일이 끝났는데 아직 "알람 끄기"를 누르지 않음. */
+export const isUnacked = (s: SessionView) => s.status === 'done' && s.seen === false;
+
 export const statusLabel = (s: SessionStatus) => STATUS_LABEL[s];
 
 export function cardClass(s: SessionView, selected: boolean): string {
   let c = `card s-${styleKey(s.status)}`;
   if (isUnseen(s)) c += ' unseen';
-  if (s.status === 'done') c += ' unack';
+  if (isUnacked(s)) c += ' unack';
   if (selected) c += ' sel';
   return c;
 }
@@ -39,7 +42,7 @@ export function cardClass(s: SessionView, selected: boolean): string {
 export function tileClass(s: SessionView): string {
   let c = `tile k-${styleKey(s.status)}`;
   if (isUnseen(s)) c += ' unseen';
-  if (s.status === 'done') c += ' unack';
+  if (isUnacked(s)) c += ' unack';
   return c;
 }
 

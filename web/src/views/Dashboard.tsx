@@ -394,6 +394,7 @@ export function Dashboard({ me }: { me: MeResponse }) {
             onSearch={current ? (q) => api.searchLog(current.id, q) : undefined}
             onDelete={current && !readOnly && !sharedSession ? () => void remove(current.id) : undefined}
             onShare={current && !readOnly && !sharedSession ? () => setSharing(current.id) : undefined}
+            onAck={current && !readOnly && !sharedSession && !inHistory ? () => markSeen(current.id) : undefined}
             reply={readOnly || sharedSession || inHistory ? undefined : reply}
             notify={readOnly || sharedSession || inHistory ? undefined : notify}
             readOnly={readOnly || sharedSession}

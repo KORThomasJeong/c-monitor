@@ -21,7 +21,7 @@ import { isClosed, replyBlockReason, safeRemoteUrl } from '../lib/reply';
 import type { ReplyCtl } from '../state/reply';
 import { Link } from '../router';
 import { formatAgo, formatClock, formatDuration, formatTime, formatUsd } from '../lib/format';
-import { canDelete, ctxText, interleave, level, replyText, splitMatches, statusLabel, TAG_COLOR, toolText } from '../lib/view';
+import { canDelete, ctxText, interleave, isUnacked, level, replyText, splitMatches, statusLabel, TAG_COLOR, toolText } from '../lib/view';
 import type { LogWindow } from '../state/store';
 
 export type Tab = 'chat' | 'tool';
@@ -51,6 +51,8 @@ type Props = {
   notice?: string | null;
   /** 있으면 머리에 "공유" 버튼 */
   onShare?: () => void;
+  /** 있으면 끝난 세션의 초록 깜박임을 끄는 "알람 끄기" 버튼 */
+  onAck?: () => void;
   /** 웹·텔레그램 답 기록(대화 줄 사이에 시각 순으로 끼운다) */
   replies?: ReplyRecord[];
   /** 공개 링크 보기: 컴퓨터·계정·폴더 대신 만료 시각을 보인다 */
@@ -266,7 +268,7 @@ function useFitHeight(ref: { current: HTMLElement | null }) {
 
 export function DetailPanel(props: Props) {
   const { session: s, machine, log, tab, onTab, onClose, connected, now } = props;
-  const { onLoadOlder, onJump, onLatest, onSearch, onDelete, reply, notify, readOnly = false, notice, onShare, replies, publicInfo } = props;
+  const { onLoadOlder, onJump, onLatest, onSearch, onDelete, reply, notify, readOnly = false, notice, onShare, onAck, replies, publicInfo } = props;
   const logRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   useFitHeight(panelRef);
@@ -498,6 +500,11 @@ export function DetailPanel(props: Props) {
           {onClose && <button type="button" className="icon-btn back" aria-label="목록으로" onClick={onClose}><BackIcon /></button>}
           <span className="p-name" title={s.name}>{s.name}</span>
           <span className={`tag ${TAG_COLOR[s.status]}`}><span className="dot" />{label}</span>
+          {rw && onAck && isUnacked(s) && (
+            <button type="button" className="btn sm p-ack" onClick={onAck} title="확인했으면 눌러 초록 깜박임을 끕니다">
+              <BellOffIcon size={14} />알람 끄기
+            </button>
+          )}
           {share && (
             <button type="button" className="btn sm p-share" onClick={onShare} title="링크나 사람 지정으로 이 세션을 보여 줍니다">
               <ShareIcon size={14} />공유
