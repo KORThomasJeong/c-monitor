@@ -29,12 +29,19 @@ export const isUnseen = (s: SessionView) => isWaitLike(s.status) && s.seen === f
 /** 초록 깜박임: 일이 끝났는데 아직 "확인 완료"를 누르지 않음. */
 export const isUnacked = (s: SessionView) => s.status === 'done' && s.seen === false;
 
+/** 끝난 결과를 확인함: 초록을 빼고 진한 회색으로(종료 세션은 배경까지 빠진 흐린 회색). */
+export const isAcked = (s: SessionView) => s.status === 'done' && s.seen !== false;
+
+/** 태그 색. 확인한 끝남은 진한 회색. */
+export const tagColor = (s: SessionView): string => (isAcked(s) ? 'dark' : TAG_COLOR[s.status]);
+
 export const statusLabel = (s: SessionStatus) => STATUS_LABEL[s];
 
 export function cardClass(s: SessionView, selected: boolean): string {
   let c = `card s-${styleKey(s.status)}`;
   if (isUnseen(s)) c += ' unseen';
   if (isUnacked(s)) c += ' unack';
+  if (isAcked(s)) c += ' acked';
   if (selected) c += ' sel';
   return c;
 }
@@ -43,6 +50,7 @@ export function tileClass(s: SessionView): string {
   let c = `tile k-${styleKey(s.status)}`;
   if (isUnseen(s)) c += ' unseen';
   if (isUnacked(s)) c += ' unack';
+  if (isAcked(s)) c += ' acked';
   return c;
 }
 

@@ -21,7 +21,7 @@ import { isClosed, replyBlockReason, safeRemoteUrl } from '../lib/reply';
 import type { ReplyCtl } from '../state/reply';
 import { Link } from '../router';
 import { formatAgo, formatClock, formatDuration, formatTime, formatUsd } from '../lib/format';
-import { canDelete, ctxText, interleave, isUnacked, level, replyText, splitMatches, statusLabel, TAG_COLOR, toolText } from '../lib/view';
+import { canDelete, ctxText, interleave, isUnacked, level, replyText, splitMatches, statusLabel, tagColor, TAG_COLOR, toolText } from '../lib/view';
 import type { LogWindow } from '../state/store';
 
 export type Tab = 'chat' | 'tool';
@@ -499,7 +499,7 @@ export function DetailPanel(props: Props) {
         <div className="p-top">
           {onClose && <button type="button" className="icon-btn back" aria-label="목록으로" onClick={onClose}><BackIcon /></button>}
           <span className="p-name" title={s.name}>{s.name}</span>
-          <span className={`tag ${TAG_COLOR[s.status]}`}><span className="dot" />{label}</span>
+          <span className={`tag ${tagColor(s)}`}><span className="dot" />{label}</span>
           {rw && onAck && isUnacked(s) && (
             <button type="button" className="btn sm p-ack" onClick={onAck} title="이번 결과를 확인했다고 표시합니다. 다음 작업이 끝나면 다시 깜박입니다">
               <CheckIcon size={14} />확인 완료

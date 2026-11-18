@@ -3,7 +3,7 @@
 // 감싸는 요소(.card-wrap / .tile-wrap) 안에 카드 버튼과 지우기 버튼을 형제로 둔다.
 import type { SessionView } from '@c-monitor/shared';
 import { formatAgo, formatClock } from '../lib/format';
-import { canDelete, cardClass, ctxText, elapsedText, shortTime, statusLabel, TAG_COLOR, tileClass, type AccountStyle } from '../lib/view';
+import { canDelete, cardClass, ctxText, elapsedText, shortTime, statusLabel, tagColor, TAG_COLOR, tileClass, type AccountStyle } from '../lib/view';
 import type { ReplyCtl } from '../state/reply';
 import { AlertIcon, BellOffIcon, BranchIcon, CheckIcon, CloseIcon, PowerIcon, SendIcon, SpinIcon, WifiOffIcon } from './Icons';
 import { PendingReply } from './Reply';
@@ -52,7 +52,7 @@ export function SessionCard({ s, acct, selected, now, onOpen, onDelete, reply }:
         aria-pressed={selected}
       >
         <span className="c-top">
-          <span className={`tag ${TAG_COLOR[s.status]}`}><span className="dot" />{label}</span>
+          <span className={`tag ${tagColor(s)}`}><span className="dot" />{label}</span>
           <span className="c-right">
             {tgOff && <span className="c-tgoff" title="알림 끔" data-testid="tg-off"><BellOffIcon size={14} /></span>}
             <span className="c-time">{elapsedText(s, now)}</span>

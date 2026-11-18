@@ -134,6 +134,8 @@ describe('대시보드 상세', () => {
     await user.click(screen.getByRole('button', { name: '확인 완료' }));
     expect(api.markSeen).toHaveBeenCalledWith('done1');
     expect(card(/^notes-sync · /)).not.toHaveClass('unack');
+    expect(card(/^notes-sync · /)).toHaveClass('acked');
+    expect(within(card(/^notes-sync · /)).getByText('작업 끝남').closest('.tag')).toHaveClass('dark');
     expect(screen.queryByRole('button', { name: '확인 완료' })).not.toBeInTheDocument();
     expect(screen.getByText('확인함')).toBeInTheDocument();
   });

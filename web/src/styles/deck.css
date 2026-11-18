@@ -30,6 +30,9 @@
 .tile.k-done .t-state{color:var(--ok-text)}
 .tile.k-done .t-ico{background:var(--ok);color:#fff}
 .tile.k-done.unack{animation:tileGreen 1.6s ease-in-out infinite}
+.tile.k-done.acked{border-color:var(--border-strong);background:var(--border2)}
+.tile.k-done.acked .t-state{color:var(--sub)}
+.tile.k-done.acked .t-ico{background:var(--sub);color:var(--surface)}
 .tile.k-run{border-color:var(--vivid);animation:tileBlue 2.4s ease-in-out infinite}
 .tile.k-run .t-state{color:var(--primary-soft-text)}
 .tile.k-run .t-ico{background:var(--primary-soft);color:var(--primary-soft-text)}

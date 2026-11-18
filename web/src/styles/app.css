@@ -64,6 +64,7 @@
 .tag.blue{background:var(--primary-soft);color:var(--primary-soft-text)}
 .tag.red{background:var(--danger-soft);color:var(--danger-text)}
 .tag.green{background:var(--ok-soft);color:var(--ok-text)}
+.tag.dark{background:var(--sub);color:var(--surface)}
 .tag.amber{background:var(--warn-soft);color:var(--warn-text)}
 .chip{display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:4px;font-size:12px;font-weight:500;white-space:nowrap}
 .chip.sk{background:var(--primary-soft);color:var(--primary-soft-text)}
@@ -129,6 +130,7 @@
 .card.s-done{border-color:var(--ok)}
 .card.s-wait.unseen{animation:blinkRed 1.1s ease-in-out infinite}
 .card.s-done.unack{animation:blinkGreen 1.6s ease-in-out infinite}
+.card.s-done.acked{border-color:var(--border-strong);background:var(--border2)}
 .card.s-run{animation:breathBlue 2.4s ease-in-out infinite}
 .card.s-run.sel{animation:none}
 .card.s-lost{border-style:dashed;border-color:var(--warn)}
