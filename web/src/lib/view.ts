@@ -26,7 +26,7 @@ export const isWaitLike = (s: SessionStatus) => s === 'wait' || s === 'limit';
 /** 빨강 깜박임: 답을 기다리는데 아직 열어 보지 않음. */
 export const isUnseen = (s: SessionView) => isWaitLike(s.status) && s.seen === false;
 
-/** 초록 깜박임: 일이 끝났는데 아직 "알람 끄기"를 누르지 않음. */
+/** 초록 깜박임: 일이 끝났는데 아직 "확인 완료"를 누르지 않음. */
 export const isUnacked = (s: SessionView) => s.status === 'done' && s.seen === false;
 
 export const statusLabel = (s: SessionStatus) => STATUS_LABEL[s];

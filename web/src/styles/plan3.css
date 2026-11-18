@@ -31,6 +31,7 @@
 .p-share{flex:none}
 .btn.p-ack{flex:none;color:var(--ok-text);border-color:var(--ok);background:var(--ok-soft)}
 .btn.p-ack:hover{background:var(--ok);border-color:var(--ok);color:#fff}
+.p-acked{flex:none;display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--ok-text)}
 .reply-note{display:flex;justify-content:center}
 .reply-note .sent{font-size:12px;max-width:100%;overflow-wrap:anywhere}
 

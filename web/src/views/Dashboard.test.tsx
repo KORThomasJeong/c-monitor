@@ -128,20 +128,21 @@ describe('대시보드 상세', () => {
     expect(api.markSeen).not.toHaveBeenCalled();
   });
 
-  it('done 카드는 상세의 "알람 끄기"를 눌러야 깜박임이 멈춘다', async () => {
+  it('done 카드는 상세의 "확인 완료"를 눌러야 깜박임이 멈추고 "확인함"이 남는다', async () => {
     const { user } = setup();
     await user.click(card(/^notes-sync · /));
-    await user.click(screen.getByRole('button', { name: '알람 끄기' }));
+    await user.click(screen.getByRole('button', { name: '확인 완료' }));
     expect(api.markSeen).toHaveBeenCalledWith('done1');
     expect(card(/^notes-sync · /)).not.toHaveClass('unack');
-    expect(screen.queryByRole('button', { name: '알람 끄기' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '확인 완료' })).not.toBeInTheDocument();
+    expect(screen.getByText('확인함')).toBeInTheDocument();
   });
 
   it('이미 알람을 끈 done 카드는 깜박이지 않고 버튼도 없다', async () => {
     const { user } = setup(snapshot({ sessions: [mkSession({ id: 'd2', name: 'acked', status: 'done', seen: true })] }));
     expect(card(/^acked · /)).not.toHaveClass('unack');
     await user.click(card(/^acked · /));
-    expect(screen.queryByRole('button', { name: '알람 끄기' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '확인 완료' })).not.toBeInTheDocument();
   });
 
   it('limit은 빨강(s-wait) 카드에 "한도 초과" 태그', () => {

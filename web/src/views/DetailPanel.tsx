@@ -51,7 +51,7 @@ type Props = {
   notice?: string | null;
   /** 있으면 머리에 "공유" 버튼 */
   onShare?: () => void;
-  /** 있으면 끝난 세션의 초록 깜박임을 끄는 "알람 끄기" 버튼 */
+  /** 있으면 끝난 결과를 확인했다고 표시하는 "확인 완료" 버튼(초록 깜박임이 멈춤) */
   onAck?: () => void;
   /** 웹·텔레그램 답 기록(대화 줄 사이에 시각 순으로 끼운다) */
   replies?: ReplyRecord[];
@@ -501,9 +501,12 @@ export function DetailPanel(props: Props) {
           <span className="p-name" title={s.name}>{s.name}</span>
           <span className={`tag ${TAG_COLOR[s.status]}`}><span className="dot" />{label}</span>
           {rw && onAck && isUnacked(s) && (
-            <button type="button" className="btn sm p-ack" onClick={onAck} title="확인했으면 눌러 초록 깜박임을 끕니다">
-              <BellOffIcon size={14} />알람 끄기
+            <button type="button" className="btn sm p-ack" onClick={onAck} title="이번 결과를 확인했다고 표시합니다. 다음 작업이 끝나면 다시 깜박입니다">
+              <CheckIcon size={14} />확인 완료
             </button>
+          )}
+          {rw && onAck && s.status === 'done' && !isUnacked(s) && (
+            <span className="p-acked" title="이번 결과는 확인했습니다. 다음 작업이 끝나면 다시 깜박입니다"><CheckIcon size={13} />확인함</span>
           )}
           {share && (
             <button type="button" className="btn sm p-share" onClick={onShare} title="링크나 사람 지정으로 이 세션을 보여 줍니다">

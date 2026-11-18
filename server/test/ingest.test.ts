@@ -69,7 +69,7 @@ describe('수집', () => {
     expect(await one(a.cookie, 's3', a.machineId)).toMatchObject({ status: 'wait', seen: false });
   });
 
-  it('끝나면 seen=false(초록 깜박임), seen 호출(알람 끄기)로 true, 다음 작업 뒤 다시 끝나면 또 false', async () => {
+  it('끝나면 seen=false(초록 깜박임), seen 호출(확인 완료)로 true, 다음 작업 뒤 다시 끝나면 또 false', async () => {
     // 막 열린 세션(입력 대기)은 깜박이지 않는다
     await h.ingest(a.token, h.batch([h.ev('s3d', 'SessionStart', {})]));
     expect(await one(a.cookie, 's3d', a.machineId)).toMatchObject({ status: 'done', seen: true });
